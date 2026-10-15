@@ -1,0 +1,3 @@
+property_id,page_id,date,metric,value,data_state
+cedar-gsc,garden,2026-07-31,clicks,23,final
+cedar-ga4,garden,2026-07-31,sessions,69,final

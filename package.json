@@ -1,1 +1,36 @@
-{"name":"seo-notebook","version":"0.1.0","private":true,"type":"module","license":"MIT","scripts":{"dev":"wrangler dev --local --test-scheduled","db:migrate":"wrangler d1 migrations apply DB --local","db:seed":"wrangler d1 execute DB --local --file=fixtures/seed.sql","setup":"npm run db:migrate && npm run db:seed","typecheck":"tsc --noEmit","test":"vitest run","check":"npm run typecheck && npm test","mcp:stdio":"tsx packages/mcp/stdio.ts"},"dependencies":{"hono":"4.10.4","zod":"3.25.76","@modelcontextprotocol/sdk":"1.20.2","drizzle-orm":"0.44.7"},"devDependencies":{"@cloudflare/workers-types":"4.20251014.0","typescript":"5.9.3","wrangler":"4.43.0","vitest":"3.2.4","tsx":"4.20.6","@types/node":"22.18.10"}}
+{
+  "name": "seo-notebook",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "dev": "wrangler dev --local --test-scheduled",
+    "db:migrate": "wrangler d1 migrations apply DB --local",
+    "db:seed": "wrangler d1 execute DB --local --file=fixtures/seed.sql",
+    "setup": "npm run db:migrate && npm run db:seed",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test",
+    "mcp:stdio": "tsx packages/mcp/stdio.ts",
+    "seed:generate": "node scripts/seed.mjs",
+    "test:integration": "node scripts/integration.mjs"
+  },
+  "dependencies": {
+    "hono": "4.13.13",
+    "zod": "4.6.7",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "drizzle-orm": "0.45.4"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261015.1",
+    "typescript": "5.9.3",
+    "wrangler": "4.151.0",
+    "vitest": "5.0.4",
+    "tsx": "4.23.15",
+    "@types/node": "26.6.5"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}
