@@ -4,3 +4,4 @@ node_modules/
 .env
 coverage/
 *.log
+seo-notebook-history.bundle

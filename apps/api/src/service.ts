@@ -153,6 +153,7 @@ export async function getImpact(env: Env, actor: Actor, id: string, q: Record<st
         if (o.id !== id && o.status !== 'planned' && (await resolvePages(env, o)).some(p => pages.includes(p)))
             overlaps.push(o.id);
     }
+    if (control.some(id => pages.includes(id))) throw new HttpError(400, 'Control must exclude changed pages');
     const result = impact({ date: c.occurred_at, points: rows, pages, control, days, lag, overlaps, status: c.status, newPage: c.type === 'new_page', metric });
     if (metric === 'ctr' || metric === 'position')
         result.warnings.push('Impression-weighted mean. For position a lower value is better. Confidence thresholds are calibrated only for volume metrics.');

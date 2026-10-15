@@ -6,7 +6,7 @@ An MIT-licensed, agent-native SEO and CRO change log. Record who changed what an
 
 ## Run locally
 
-Requires **Node 22.12+** and npm. All application development runs in Wrangler, with local D1, R2 and Queues emulation; no separate Vite, Node or Docker server.
+Requires **Node 22.14+** and npm. All application development runs in Wrangler, with local D1, R2 and Queues emulation; no separate Vite, Node or Docker server.
 
 ```sh
 npm ci
