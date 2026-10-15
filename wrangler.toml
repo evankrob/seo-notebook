@@ -1,0 +1,35 @@
+name = "seo-notebook"
+main = "apps/api/src/index.ts"
+compatibility_date = "2025-10-14"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./apps/web"
+binding = "ASSETS"
+run_worker_first = true
+
+[vars]
+CONNECTOR_MODE = "mock"
+APP_ORIGIN = "http://localhost:8787"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "seo-notebook-local"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "UPLOADS"
+bucket_name = "seo-notebook-local-uploads"
+
+[[queues.producers]]
+binding = "JOBS"
+queue = "seo-notebook-local-jobs"
+
+[[queues.consumers]]
+queue = "seo-notebook-local-jobs"
+max_batch_size = 10
+max_retries = 3
+
+[triggers]
+crons = ["0 7 * * *"]

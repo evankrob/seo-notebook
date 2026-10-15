@@ -1,0 +1,18 @@
+PRAGMA foreign_keys = ON;
+CREATE TABLE org (id TEXT PRIMARY KEY, name TEXT NOT NULL, plan TEXT NOT NULL DEFAULT 'self-host');
+CREATE TABLE member (id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES org(id), name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, salt TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('admin','editor')));
+CREATE TABLE session (token_hash TEXT PRIMARY KEY, member_id TEXT NOT NULL REFERENCES member(id), expires_at TEXT NOT NULL);
+CREATE TABLE invite (token_hash TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES org(id), email TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('admin','editor')), expires_at TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE agent_token (id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES org(id), name TEXT NOT NULL, model TEXT, token_hash TEXT NOT NULL UNIQUE, scopes TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE client (id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES org(id), name TEXT NOT NULL, timezone TEXT NOT NULL);
+CREATE TABLE connection (id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES org(id), provider TEXT NOT NULL, auth_type TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'mock');
+CREATE TABLE property (id TEXT PRIMARY KEY, client_id TEXT NOT NULL REFERENCES client(id), type TEXT NOT NULL, external_id TEXT NOT NULL, connection_id TEXT REFERENCES connection(id));
+CREATE TABLE page (id TEXT PRIMARY KEY, client_id TEXT NOT NULL REFERENCES client(id), url TEXT NOT NULL, canonical TEXT, tags TEXT NOT NULL DEFAULT '[]', UNIQUE(client_id,url));
+CREATE TABLE page_group (id TEXT PRIMARY KEY, client_id TEXT NOT NULL REFERENCES client(id), name TEXT NOT NULL, page_ids TEXT NOT NULL);
+CREATE TABLE change_entry (id TEXT PRIMARY KEY, client_id TEXT NOT NULL REFERENCES client(id), occurred_at TEXT NOT NULL, timezone TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('planned','shipped','reverted')), type TEXT NOT NULL, page_ids TEXT NOT NULL, group_id TEXT REFERENCES page_group(id), sitewide INTEGER NOT NULL DEFAULT 0, summary TEXT NOT NULL, rationale TEXT NOT NULL, author_id TEXT NOT NULL, author_name TEXT NOT NULL, author_kind TEXT NOT NULL, model TEXT, source TEXT NOT NULL, evidence TEXT NOT NULL DEFAULT '[]', expected_metric TEXT NOT NULL DEFAULT 'clicks', tags TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE INDEX changes_client_date ON change_entry(client_id,occurred_at);
+CREATE TABLE idempotency (actor_id TEXT NOT NULL, key TEXT NOT NULL, request_hash TEXT NOT NULL, change_id TEXT NOT NULL REFERENCES change_entry(id), PRIMARY KEY(actor_id,key));
+CREATE TABLE metric_series (property_id TEXT NOT NULL REFERENCES property(id), page_id TEXT NOT NULL REFERENCES page(id), date TEXT NOT NULL, metric TEXT NOT NULL, value REAL NOT NULL, source TEXT NOT NULL, data_state TEXT NOT NULL CHECK(data_state IN ('final','fresh')), ingested_at TEXT NOT NULL, PRIMARY KEY(property_id,page_id,date,metric));
+CREATE INDEX metrics_window ON metric_series(page_id,date,metric);
+CREATE TABLE import_job (id TEXT PRIMARY KEY, client_id TEXT NOT NULL REFERENCES client(id), kind TEXT NOT NULL, object_key TEXT NOT NULL, status TEXT NOT NULL, error TEXT, row_count INTEGER NOT NULL DEFAULT 0, actor_json TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE report (id TEXT PRIMARY KEY, client_id TEXT NOT NULL REFERENCES client(id), token_hash TEXT NOT NULL UNIQUE, title TEXT NOT NULL, since TEXT NOT NULL, until TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
