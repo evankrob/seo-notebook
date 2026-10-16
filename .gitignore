@@ -5,3 +5,12 @@ node_modules/
 coverage/
 *.log
 seo-notebook-history.bundle
+
+# build outputs, env, local DBs
+dist/
+build/
+.env.*
+!.env.example
+*.db
+*.sqlite
+*.sqlite3
