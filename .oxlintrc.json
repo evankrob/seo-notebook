@@ -1,0 +1,27 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": [
+    "typescript",
+    "unicorn",
+    "import"
+  ],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "rules": {
+    "typescript/no-explicit-any": "warn",
+    "typescript/ban-ts-comment": "error",
+    "no-console": "off",
+    "unicorn/no-invalid-fetch-options": "off",
+    "unicorn/consistent-function-scoping": "off",
+    "unicorn/prefer-add-event-listener": "off"
+  },
+  "ignorePatterns": [
+    "dist/**",
+    "node_modules/**",
+    ".wrangler/**",
+    "fixtures/**",
+    "migrations/**"
+  ]
+}
