@@ -33,3 +33,29 @@ max_retries = 3
 
 [triggers]
 crons = ["0 7 * * *"]
+
+# Production (deployed 2026-10-16 to Evan's account, behind Cloudflare Access).
+# Deploy: npx wrangler deploy --env production
+[env.production]
+name = "seo-notebook"
+workers_dev = true
+[env.production.vars]
+CONNECTOR_MODE = "mock"
+APP_ORIGIN = "https://seo-notebook.evan-fde.workers.dev"
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "seo-notebook"
+database_id = "9c1e41c7-9ab5-4a4e-b4af-b8aeac5a0516"
+migrations_dir = "migrations"
+[[env.production.r2_buckets]]
+binding = "UPLOADS"
+bucket_name = "seo-notebook-uploads"
+[[env.production.queues.producers]]
+binding = "JOBS"
+queue = "seo-notebook-jobs"
+[[env.production.queues.consumers]]
+queue = "seo-notebook-jobs"
+max_batch_size = 10
+max_retries = 3
+[env.production.triggers]
+crons = ["0 7 * * *"]
