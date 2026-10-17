@@ -1,0 +1,30 @@
+# AGENTS.md — SEO Notebook
+
+Cloudflare Worker (Hono + D1 + Queues + R2) that logs SEO changes and scores their impact from GSC/GA4 metrics. REST + MCP for agents, small vanilla-JS UI.
+
+## Commands (Node >= 22; `node:sqlite` is required by tests)
+- `npm ci` · `npm run setup` (local D1 migrate + seed) · `npm run dev` (http://localhost:8787)
+- `npm run check` = typecheck + lint (oxlint) + tests. **Run it before every commit; it is what CI runs.**
+
+## Map
+- `apps/api/src/index.ts` HTTP routes (Hono). `auth.ts` sessions, agent bearer tokens, PBKDF2. `service.ts` change log, scopes, `HttpError`, zod schemas. `jobs.ts` queued imports/ingestion. `mcp.ts` MCP server. `types.ts` Env/Actor/Change.
+- `packages/impact` pure impact/window math. `packages/connectors` fixture GSC/GA4 + CSV parser (no live Google). `packages/mcp/stdio.ts` stdio bridge.
+- `apps/web/app.js` browser UI. `migrations/` D1 schema. `fixtures/seed.sql` demo data (never for public instances).
+- Tests: `tests/impact.test.ts`, `tests/connectors.test.ts`, `tests/worker.test.ts` (real handlers + real migrations on SQLite via a D1-shaped adapter).
+
+## Invariants (do not break)
+1. **Tenant isolation:** every query touching client data joins/filters on `org_id` of the actor. Load clients through `client(env, actor, id)`; never `SELECT ... WHERE id=?` alone.
+2. **Authz:** call `scope(actor, ...)` / `admin(actor)` at the top of every handler. Agents never set author fields; the actor does.
+3. **Validate input with zod** (`.strict()` for writes). Never pass `c.req.json()` straight to SQL.
+4. Writes accept `Idempotency-Key`; retries must not duplicate rows (including queue retries).
+5. Dates are `YYYY-MM-DD` via the shared `date` schema. JSON columns (`page_ids`, `evidence`, `tags`, `scopes`) are encoded/decoded in one place (`decode`).
+6. Only bound SQL parameters; no string-built SQL. Schema changes = new migration file, never edit an applied one.
+7. Connectors are mocks. Do not add live Google/OAuth calls or store credentials without explicit approval.
+
+## Verify
+`npm run check`. For route changes, add a case to `tests/worker.test.ts` covering the happy path **and** a cross-org request that must 404.
+
+## Don'ts
+- No new `any` (lint warns; prefer typed row interfaces). No `@ts-ignore`.
+- Don't add more 200+ char one-liners; format new code normally.
+- Never commit `.dev.vars`, `.env*`, tokens, or `*.bundle`. Don't deploy or create Cloudflare resources.

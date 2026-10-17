@@ -11,24 +11,26 @@
     "setup": "npm run db:migrate && npm run db:seed",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm test",
+    "check": "npm run typecheck && npm run lint && npm test",
     "mcp:stdio": "tsx packages/mcp/stdio.ts",
     "seed:generate": "node scripts/seed.mjs",
-    "test:integration": "vitest run tests/worker.test.ts"
+    "test:integration": "vitest run tests/worker.test.ts",
+    "lint": "oxlint"
   },
   "dependencies": {
-    "hono": "4.13.13",
-    "zod": "4.6.7",
     "@modelcontextprotocol/sdk": "1.32.1",
-    "drizzle-orm": "0.45.4"
+    "drizzle-orm": "0.45.4",
+    "hono": "4.13.13",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261015.1",
-    "typescript": "5.9.3",
-    "wrangler": "4.151.0",
-    "vitest": "5.0.4",
+    "@types/node": "26.6.5",
+    "oxlint": "^1.88.0",
     "tsx": "4.23.15",
-    "@types/node": "26.6.5"
+    "typescript": "5.9.3",
+    "vitest": "5.0.4",
+    "wrangler": "4.151.0"
   },
   "engines": {
     "node": ">=22.14.0"
