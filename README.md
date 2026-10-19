@@ -1,12 +1,18 @@
 # SEO Notebook
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/evankrob/seo-notebook)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/evankrob/seo-notebook) · [seonotebook.dev](https://seonotebook.dev)
 
 A self-hosted change log that your AI agents write to. When an agent edits a page (a title, a meta description, an H1, a block of content), it records what changed, the old and new values, and why. The notebook then lines those changes up against Google Search Console and Google Analytics so you can see the before and after.
 
 - **Agent-first.** Agents connect over MCP and log changes by URL. Sites and pages are created automatically from the domain; nobody sets anything up by hand. Manual logging in the UI is still there.
 - **Yours.** Deploy it to your own Cloudflare account, or run it locally. There is no hosted service and no separate sign-in: on Cloudflare, [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) decides who can open the notebook.
 - **Honest impact.** Before/after windows, overlap detection, optional control groups and a confidence label that stays "Inconclusive" until the data supports more.
+
+![The timeline: an activity calendar, site and tag filters, a Search Console chart with change markers, and agent-logged changes with their old and new values](docs/screenshots/timeline.png)
+
+![A change opened to its impact: 28-day before and after windows, the chart around the change, and its confidence label (dark mode)](docs/screenshots/impact-dark.png)
+
+<sub>Screenshots use the fictional demo data from `npm run setup`.</sub>
 
 > **Status:** Search Console and GA4 data come from your Google service account; see [Connect Google data](#connect-google-data). Local development and tests use fixture data.
 

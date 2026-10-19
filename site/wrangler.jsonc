@@ -2,6 +2,8 @@
     // Marketing site only. The notebook itself is the Worker at the repository root.
     "name": "seo-notebook-site",
     "compatibility_date": "2026-10-14",
+    // Cloudflare creates the DNS record and certificate for the zone on deploy.
+    "routes": [{ "pattern": "seonotebook.dev", "custom_domain": true }],
     "assets": {
         "directory": "./dist",
         "not_found_handling": "404-page"
