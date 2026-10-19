@@ -6,7 +6,8 @@ import { clients } from './schema';
 import type { Actor, Bindings, Env, Job } from './types';
 import { accessConfigured, authenticate, hash } from './auth';
 import { HttpError, client, date, day, getImpact, impactCache, listSites, siteDomain, listChanges, logChange, normalizeURL, scope, updateChange } from './service';
-import { fanout, processJob } from './jobs';
+import { backfillPage, fanout, processJob } from './jobs';
+import { discover, parseServiceAccount } from '../../../packages/connectors/google';
 import { mcp } from './mcp';
 import { csvCell } from '../../../packages/connectors/csv';
 const app = new Hono<Bindings>();
@@ -20,7 +21,7 @@ const body = async (c: Context<Bindings>): Promise<unknown> => {
 };
 app.use('*', async (c, next) => { await next(); c.header('X-Content-Type-Options', 'nosniff'); c.header('Referrer-Policy', 'no-referrer'); c.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'"); c.header('Cache-Control', 'no-store'); });
 app.onError((e, c) => c.json({ error: e instanceof ZodError ? e.issues.map(i => i.path.join('.') + ': ' + i.message).join('; ') : e instanceof HttpError ? e.message : 'Internal server error' }, e instanceof HttpError ? e.status as 400 : e instanceof ZodError ? 400 : 500));
-app.get('/health', c => c.json({ ok: true, mode: c.env.CONNECTOR_MODE }));
+app.get('/health', c => c.json({ ok: true, mode: c.env.CONNECTOR_MODE, google: !!parseServiceAccount(c.env.GOOGLE_SERVICE_ACCOUNT) }));
 app.use('/v1/*', async (c, next) => {
     const actor = await authenticate(c.req.raw, c.env);
     if (!actor)
@@ -54,15 +55,76 @@ app.post('/v1/clients', async (c) => {
         throw new HttpError(409, 'Site already exists: ' + domain);
     return c.json({ id, domain, name: b.name ?? domain, timezone: b.timezone }, 201);
 });
-app.get('/v1/clients/:id/context', async (c) => { const a = c.get('actor'); scope(a, 'read:metrics'); const cl = await client(c.env, a, c.req.param('id')); const [properties, pages, groups] = await Promise.all(['property', 'page', 'page_group'].map(t => c.env.DB.prepare(`SELECT * FROM ${t} WHERE client_id=?`).bind(cl.id).all())); return c.json({ client: cl, properties: properties.results, pages: pages.results, groups: groups.results }); });
-app.post('/v1/pages', async (c) => { const a = c.get('actor'); admin(a); const b = z.object({ client_id: z.string(), url: z.string().url(), canonical: z.string().url().optional(), tags: z.array(z.string()).default([]) }).parse(await body(c)); await client(c.env, a, b.client_id); const id = crypto.randomUUID(); await c.env.DB.prepare('INSERT INTO page VALUES (?,?,?,?,?)').bind(id, b.client_id, normalizeURL(b.url), b.canonical ? normalizeURL(b.canonical) : null, JSON.stringify(b.tags)).run(); return c.json({ id, ...b }, 201); });
+app.get('/v1/clients/:id/context', async (c) => { const a = c.get('actor'); scope(a, 'read:metrics'); const cl = await client(c.env, a, c.req.param('id')); const [properties, pages, groups] = await Promise.all([
+        "SELECT p.*, COALESCE(n.mode,'mock') AS mode FROM property p LEFT JOIN connection n ON n.id=p.connection_id WHERE p.client_id=?",
+        'SELECT * FROM page WHERE client_id=?',
+        'SELECT * FROM page_group WHERE client_id=?',
+    ].map(sql => c.env.DB.prepare(sql).bind(cl.id).all())); return c.json({ client: cl, properties: properties.results, pages: pages.results, groups: groups.results }); });
+app.post('/v1/pages', async (c) => { const a = c.get('actor'); admin(a); const b = z.object({ client_id: z.string(), url: z.string().url(), canonical: z.string().url().optional(), tags: z.array(z.string()).default([]) }).parse(await body(c)); await client(c.env, a, b.client_id); const id = crypto.randomUUID(); await c.env.DB.prepare('INSERT INTO page VALUES (?,?,?,?,?)').bind(id, b.client_id, normalizeURL(b.url), b.canonical ? normalizeURL(b.canonical) : null, JSON.stringify(b.tags)).run(); await backfillPage(c.env, b.client_id, id); return c.json({ id, ...b }, 201); });
 app.post('/v1/groups', async (c) => { const a = c.get('actor'); admin(a); const b = z.object({ client_id: z.string(), name: z.string().min(1), page_ids: z.array(z.string()).min(1).max(200) }).parse(await body(c)); await client(c.env, a, b.client_id); for (const id of b.page_ids)
     if (!await c.env.DB.prepare('SELECT id FROM page WHERE id=? AND client_id=?').bind(id, b.client_id).first())
         throw new HttpError(400, 'Page outside client'); const id = crypto.randomUUID(); await c.env.DB.prepare('INSERT INTO page_group VALUES (?,?,?,?)').bind(id, b.client_id, b.name, JSON.stringify([...new Set(b.page_ids)])).run(); return c.json({ id, ...b }, 201); });
-app.post('/v1/properties', async (c) => { const a = c.get('actor'); admin(a); const b = z.object({ client_id: z.string(), type: z.enum(['gsc_domain', 'gsc_url_prefix', 'ga4', 'custom']), external_id: z.string().min(1), auth_type: z.enum(['oauth', 'service_account']).default('oauth') }).parse(await body(c)); await client(c.env, a, b.client_id); const id = crypto.randomUUID(), connection = crypto.randomUUID(); await c.env.DB.batch([c.env.DB.prepare('INSERT INTO connection VALUES (?,?,?,?,?)').bind(connection, a.org_id, b.type === 'ga4' ? 'ga4' : 'gsc', b.auth_type, 'mock'), c.env.DB.prepare('INSERT INTO property VALUES (?,?,?,?,?)').bind(id, b.client_id, b.type, b.external_id, connection)]); return c.json({ id, ...b, mode: 'mock' }, 201); });
-app.post('/v1/properties/:id/sync', async (c) => { admin(c.get('actor')); const p = await c.env.DB.prepare('SELECT * FROM property WHERE id=?').bind(c.req.param('id')).first<any>(); if (!p)
-    throw new HttpError(404, 'Property not found'); await client(c.env, c.get('actor'), p.client_id); if (!['gsc_domain', 'gsc_url_prefix', 'ga4'].includes(p.type))
-    throw new HttpError(400, 'No connector for this property'); return c.json({ queued: await fanout(c.env, p.id, c.req.query('backfill') === 'true'), mode: 'mock' }, 202); });
+// What the service account can see in Search Console and GA4, for the connect dialog.
+app.get('/v1/google', async (c) => {
+    admin(c.get('actor'));
+    const sa = parseServiceAccount(c.env.GOOGLE_SERVICE_ACCOUNT);
+    if (!sa)
+        return c.json({ configured: false });
+    return c.json({ configured: true, ...await discover(sa) });
+});
+const propertyInput = z.object({
+    client_id: z.string(),
+    type: z.enum(['gsc_domain', 'gsc_url_prefix', 'ga4', 'custom']),
+    external_id: z.string().min(1).max(300),
+    auth_type: z.enum(['oauth', 'service_account']).default('service_account'),
+    mode: z.enum(['mock', 'live']).default('mock'),
+}).strict().superRefine((b, ctx) => {
+    if (b.mode !== 'live')
+        return;
+    const ok = b.type === 'gsc_domain' ? /^sc-domain:[a-z0-9.-]+$/i.test(b.external_id)
+        : b.type === 'gsc_url_prefix' ? /^https?:\/\/[^/]+\/.*$/.test(b.external_id)
+        : b.type === 'ga4' ? /^\d+$/.test(b.external_id) : false;
+    if (!ok)
+        ctx.addIssue({ code: 'custom', path: ['external_id'], message: 'Not a valid ' + b.type + ' property ID' });
+});
+app.post('/v1/properties', async (c) => {
+    const a = c.get('actor');
+    admin(a);
+    const b = propertyInput.parse(await body(c));
+    await client(c.env, a, b.client_id);
+    if (b.mode === 'live' && !parseServiceAccount(c.env.GOOGLE_SERVICE_ACCOUNT))
+        throw new HttpError(400, 'Google service account is not configured (GOOGLE_SERVICE_ACCOUNT secret)');
+    const id = crypto.randomUUID(), connection = crypto.randomUUID();
+    await c.env.DB.batch([
+        c.env.DB.prepare('INSERT INTO connection VALUES (?,?,?,?,?)').bind(connection, a.org_id, b.type === 'ga4' ? 'ga4' : 'gsc', b.mode === 'live' ? 'service_account' : b.auth_type, b.mode),
+        c.env.DB.prepare('INSERT INTO property VALUES (?,?,?,?,?)').bind(id, b.client_id, b.type, b.external_id, connection),
+    ]);
+    // Live properties start with sixteen months of history.
+    const queued = b.mode === 'live' ? await fanout(c.env, id, true) : 0;
+    return c.json({ id, ...b, queued }, 201);
+});
+app.delete('/v1/properties/:id', async (c) => {
+    const a = c.get('actor');
+    admin(a);
+    const p = await c.env.DB.prepare('SELECT p.id,p.connection_id FROM property p JOIN client cl ON cl.id=p.client_id WHERE p.id=? AND cl.org_id=?').bind(c.req.param('id'), a.org_id).first<{ id: string; connection_id: string | null }>();
+    if (!p)
+        throw new HttpError(404, 'Property not found');
+    await c.env.DB.batch([
+        c.env.DB.prepare('DELETE FROM metric_series WHERE property_id=?').bind(p.id),
+        c.env.DB.prepare('DELETE FROM property WHERE id=?').bind(p.id),
+        c.env.DB.prepare('DELETE FROM connection WHERE id=? AND org_id=?').bind(p.connection_id, a.org_id),
+    ]);
+    return c.json({ ok: true });
+});
+app.post('/v1/properties/:id/sync', async (c) => {
+    admin(c.get('actor'));
+    const p = await c.env.DB.prepare("SELECT p.*, COALESCE(n.mode,'mock') AS mode FROM property p JOIN client cl ON cl.id=p.client_id LEFT JOIN connection n ON n.id=p.connection_id WHERE p.id=? AND cl.org_id=?").bind(c.req.param('id'), c.get('actor').org_id).first<{ id: string; type: string; mode: string }>();
+    if (!p)
+        throw new HttpError(404, 'Property not found');
+    if (!['gsc_domain', 'gsc_url_prefix', 'ga4'].includes(p.type))
+        throw new HttpError(400, 'No connector for this property');
+    return c.json({ queued: await fanout(c.env, p.id, c.req.query('backfill') === 'true'), mode: p.mode }, 202);
+});
 app.get('/v1/changes', async (c) => c.json(await listChanges(c.env, c.get('actor'), c.req.query())));
 app.post('/v1/changes', async (c) => c.json(await logChange(c.env, c.get('actor'), await body(c), c.req.header('Idempotency-Key'), c.get('actor').kind === 'human' ? 'ui' : 'api'), 201));
 app.patch('/v1/changes/:id', async (c) => c.json(await updateChange(c.env, c.get('actor'), c.req.param('id'), await body(c))));

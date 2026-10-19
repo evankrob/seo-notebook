@@ -13,6 +13,13 @@ export type Job = {
     propertyId: string;
     date: string;
 } | {
+    /** Live properties: one Google query covers a date range (optionally one page). */
+    kind: 'sync_range';
+    propertyId: string;
+    pageId?: string;
+    start: string;
+    end: string;
+} | {
     kind: 'import';
     id: string;
 };
@@ -22,6 +29,8 @@ export interface Env {
     JOBS: Queue<Job>;
     ASSETS: Fetcher;
     CONNECTOR_MODE: string;
+    /** Service-account JSON key (a Worker secret). Unset = live Google properties are unavailable. */
+    GOOGLE_SERVICE_ACCOUNT?: string;
     /** Cloudflare Access team domain, e.g. myteam.cloudflareaccess.com. Unset = local mode. */
     ACCESS_TEAM_DOMAIN?: string;
     /** Application Audience (AUD) tag of the Access application protecting the UI. */

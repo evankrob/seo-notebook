@@ -1,9 +1,10 @@
 import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, readdirSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 import { app } from '../apps/api/src/index';
 import { processJob, fanout } from '../apps/api/src/jobs';
+import { clearTokenCache } from '../packages/connectors/google';
 import type { Env, Job } from '../apps/api/src/types';
 // Real SQLite schema/constraints with D1's asynchronous statement contract.
 class Statement {
@@ -211,5 +212,68 @@ describe('agent-first change logging', () => {
         expect(list.map(a => a.id)).toContain('demo-agent');
         expect(list.every(a => !('token_hash' in a))).toBe(true);
         expect((await request('/v1/agents')).status).toBe(403);
+    });
+});
+
+describe('Live Google properties', () => {
+    const human = { Authorization: '', Origin: 'http://localhost:8787' };
+    const gsc = { client_id: 'cedar', type: 'gsc_domain', external_id: 'sc-domain:cedar.example', mode: 'live' };
+    const key = () => {
+        const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } });
+        return JSON.stringify({ client_email: 'notebook@test.iam.gserviceaccount.com', private_key: privateKey });
+    };
+    beforeEach(() => {
+        clearTokenCache();
+        vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+            const url = String(input);
+            const body = url.includes('oauth2') ? { access_token: 't', expires_in: 3600 }
+                : url.endsWith('/sites') ? { siteEntry: [{ siteUrl: 'sc-domain:cedar.example', permissionLevel: 'siteOwner' }] }
+                : url.includes('accountSummaries') ? { accountSummaries: [{ displayName: 'Cedar', propertySummaries: [{ property: 'properties/42', displayName: 'Cedar web' }] }] }
+                : url.includes('searchAnalytics') ? { rows: [{ keys: ['2026-10-01'], clicks: 9, impressions: 300, ctr: 0.03, position: 6 }] }
+                : null;
+            return new Response(JSON.stringify(body ?? { error: { message: 'unexpected' } }), { status: body ? 200 : 500 });
+        });
+    });
+    afterEach(() => vi.restoreAllMocks());
+
+    it('refuses live properties until the service account secret is set', async () => {
+        expect((await request('/v1/properties', 'POST', gsc, human)).status).toBe(400);
+        expect(await (await request('/v1/google', 'GET', undefined, { Authorization: '' })).json()).toEqual({ configured: false });
+    });
+
+    it('connects, backfills every page, syncs real rows and backfills newly logged pages', async () => {
+        env.GOOGLE_SERVICE_ACCOUNT = key();
+        const d = await (await request('/v1/google', 'GET', undefined, { Authorization: '' })).json() as { gsc: { siteUrl: string }[]; ga4: { id: string; name: string }[] };
+        expect(d.gsc[0].siteUrl).toBe('sc-domain:cedar.example');
+        expect(d.ga4[0]).toMatchObject({ id: '42', name: 'Cedar web' });
+        expect((await request('/v1/properties', 'POST', { ...gsc, external_id: 'cedar.example' }, human)).status).toBe(400);
+        const r = await request('/v1/properties', 'POST', gsc, human);
+        expect(r.status).toBe(201);
+        const p = await r.json() as { id: string; queued: number };
+        expect(p.queued).toBe(3);
+        expect(jobs.every(j => j.kind === 'sync_range' && j.pageId)).toBe(true);
+        const ctx = await (await request('/v1/clients/cedar/context', 'GET', undefined, { Authorization: '' })).json() as { properties: { id: string; mode: string }[] };
+        expect(ctx.properties.find(x => x.id === p.id)?.mode).toBe('live');
+        await processJob(env, jobs.find(j => j.kind === 'sync_range' && j.pageId === 'garden')!);
+        expect(sqlite.prepare("SELECT value FROM metric_series WHERE property_id=? AND page_id='garden' AND date='2026-10-01' AND metric='clicks'").get(p.id)?.value).toBe(9);
+        jobs.length = 0;
+        await request('/v1/changes', 'POST', { url: 'https://cedar.example/new-guide/', summary: 'New guide', rationale: 'Cover a missing topic' });
+        const newPage = sqlite.prepare("SELECT id FROM page WHERE url='https://cedar.example/new-guide/'").get()?.id;
+        expect(jobs).toEqual([expect.objectContaining({ kind: 'sync_range', propertyId: p.id, pageId: newPage })]);
+        jobs.length = 0;
+        expect(await fanout(env)).toBe(14 + 4); // two fixture properties × 7 days, plus one live job per page
+        expect((await request('/v1/properties/' + p.id, 'DELETE', undefined, human)).status).toBe(200);
+        expect(sqlite.prepare('SELECT COUNT(*) n FROM metric_series WHERE property_id=?').get(p.id)?.n).toBe(0);
+    });
+
+    it('keeps Google setup admin-only and other workspaces out', async () => {
+        env.GOOGLE_SERVICE_ACCOUNT = key();
+        expect((await request('/v1/google')).status).toBe(403);
+        expect((await request('/v1/properties', 'POST', gsc)).status).toBe(403);
+        sqlite.exec("INSERT INTO org VALUES ('other','Other','self-host'); INSERT INTO client(id,org_id,name,timezone,domain) VALUES ('other-client','other','Other','UTC','other.example'); INSERT INTO property VALUES ('other-prop','other-client','gsc_domain','sc-domain:other.example',NULL);");
+        expect((await request('/v1/properties', 'POST', { ...gsc, client_id: 'other-client' }, human)).status).toBe(404);
+        expect((await request('/v1/properties/other-prop', 'DELETE', undefined, human)).status).toBe(404);
+        expect((await request('/v1/properties/other-prop/sync', 'POST', undefined, human)).status).toBe(404);
+        expect(sqlite.prepare("SELECT COUNT(*) n FROM property WHERE id='other-prop'").get()?.n).toBe(1);
     });
 });

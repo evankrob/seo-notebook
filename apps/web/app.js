@@ -141,6 +141,12 @@ async function refresh() {
     render();
 }
 
+// Live Google data wins over fixtures when a site has both.
+const pickProperty = (ctx, ga) => {
+    const fits = ctx.properties.filter(p => ga ? p.type === 'ga4' : p.type.startsWith('gsc'));
+    return (fits.find(p => p.mode === 'live') ?? fits[0])?.id;
+};
+
 async function loadMetrics() {
     const ctx = state.contexts[state.filter.site];
     if (!ctx) {
@@ -149,7 +155,7 @@ async function loadMetrics() {
         return;
     }
     if (!ctx.properties.some(p => p.id === state.property))
-        state.property = ctx.properties.find(p => p.type.startsWith('gsc'))?.id ?? ctx.properties[0]?.id ?? '';
+        state.property = pickProperty(ctx, false) ?? ctx.properties[0]?.id ?? '';
     if (!ctx.pages.some(p => p.id === state.page))
         state.page = '';
     if (!state.property) {
@@ -363,12 +369,12 @@ function diffHTML(diff) {
 function metricsHTML() {
     const ctx = state.contexts[state.filter.site];
     if (!ctx.properties.length)
-        return `<section class="panel metrics"><h2>Performance</h2><p class="muted">No data source for this site yet. Connect a property under <em>Imports &amp; data</em>.</p></section>`;
+        return `<section class="panel metrics"><h2>Performance</h2><p class="muted">No data source for this site yet. Use <button class="ghost small" data-action="google">Connect Google data</button> to pull Search Console and GA4.</p></section>`;
     const markers = state.changes.filter(c => c.client_id === ctx.client.id && (!state.pageChanges || state.pageChanges.has(c.id)));
     return `<section class="panel metrics">
-        <div class="row between"><h2>Performance</h2><span class="pill quiet">FIXTURE DATA</span></div>
+        <div class="row between"><h2>Performance</h2>${ctx.properties.find(p => p.id === state.property)?.mode === 'live' ? '<span class="pill">LIVE · GOOGLE</span>' : '<span class="pill quiet">FIXTURE DATA</span>'}</div>
         <div class="filters">
-            <select data-change="property" aria-label="Property">${ctx.properties.map(p => opt(p.id, p.type + ' · ' + p.external_id, p.id === state.property)).join('')}</select>
+            <select data-change="property" aria-label="Property">${ctx.properties.map(p => opt(p.id, propertyLabel(p), p.id === state.property)).join('')}</select>
             <select data-change="page" aria-label="Page">${opt('', 'All pages')}${ctx.pages.map(p => opt(p.id, pagePath(p.url), p.id === state.page)).join('')}</select>
             <select data-change="metric" aria-label="Metric">${METRICS.map(m => opt(m, m.replace('_', ' '), m === state.metric)).join('')}</select>
         </div>
@@ -499,6 +505,8 @@ async function handle(e, type) {
                 return share();
             case 'tools':
                 return tools();
+            case 'google':
+                return await connectGoogle(f.site || defaultSite());
         }
     }
     catch (err) {
@@ -515,7 +523,7 @@ async function onChange(kind, el) {
         state.metric = ctx.properties.find(p => p.id === state.property)?.type === 'ga4' ? 'sessions' : 'clicks';
     if (kind === 'metric') {
         const ga = ['sessions', 'key_events'].includes(state.metric);
-        state.property = ctx.properties.find(p => ga ? p.type === 'ga4' : p.type.startsWith('gsc'))?.id ?? state.property;
+        state.property = pickProperty(ctx, ga) ?? state.property;
     }
     await loadMetrics();
     render();
@@ -535,7 +543,7 @@ function modal(title, html, submit, label = 'Save') {
     container.querySelector('input,select,textarea')?.focus();
     container.querySelector('form').onsubmit = async (e) => {
         e.preventDefault();
-        const button = e.target.querySelector('button:last-of-type');
+        const button = e.target.querySelector(':scope > button:last-child');
         button.disabled = true;
         try {
             const fd = new FormData(e.target);
@@ -630,13 +638,14 @@ function changeForm(existing) {
 }
 
 function tools() {
-    const box = sheet('Imports & data', `<p class="muted">Agents usually create sites and pages for you when they log a change. Data sources are fixture-backed in this build.</p>
+    const box = sheet('Imports & data', `<p class="muted">Agents usually create sites and pages for you when they log a change. Google data syncs daily; new pages get their history pulled automatically.</p>
         <form>${siteSelect(defaultSite())}</form>
         <div class="tools">
-            <button class="secondary" data-tool="sync">↻ Sync fixture data (7 days)</button>
-            <button class="secondary" data-tool="backfill">↻ Backfill fixtures (16 months)</button>
+            <button class="wide" data-tool="google">Connect Google data (Search Console + GA4)</button>
+            <button class="secondary" data-tool="sync">↻ Sync last 7 days</button>
+            <button class="secondary" data-tool="backfill">↻ Backfill 16 months</button>
             <button class="secondary" data-tool="upload">↑ Upload CSV</button>
-            <button class="secondary" data-tool="property">+ Connect mock property</button>
+            <button class="secondary" data-tool="property">+ Connect fixture property</button>
             <button class="secondary" data-tool="page">+ Add page</button>
             <button class="secondary" data-tool="group">+ Create page group</button>
             <button class="secondary" data-tool="site">+ Add site</button>
@@ -646,7 +655,7 @@ function tools() {
         const site = box.querySelector('[name=site]').value;
         box.remove();
         try {
-            await ({ sync: () => sync(site, false), backfill: () => sync(site, true), upload: () => upload(site), property: () => addProperty(site), page: () => addPage(site), group: () => addGroup(site), site: addSite, agent: newAgent })[b.dataset.tool]();
+            await ({ google: () => connectGoogle(site), sync: () => sync(site, false), backfill: () => sync(site, true), upload: () => upload(site), property: () => addProperty(site), page: () => addPage(site), group: () => addGroup(site), site: addSite, agent: newAgent })[b.dataset.tool]();
         }
         catch (e) {
             toast(e.message);
@@ -661,7 +670,7 @@ async function sync(site, backfill) {
     let queued = 0;
     for (const p of props)
         queued += (await api(`/v1/properties/${encodeURIComponent(p.id)}/sync${backfill ? '?backfill=true' : ''}`, 'POST')).queued;
-    toast(`${queued} property-day fixture jobs queued. Refresh shortly to view results.`);
+    toast(`${queued} sync jobs queued. Refresh shortly to view results.`);
 }
 
 function upload(site) {
@@ -690,6 +699,76 @@ async function pollImport(id) {
     }
     toast('Import is still queued. Check /v1/imports/' + id);
 }
+
+const propertyLabel = p => ({ gsc_domain: 'Search Console', gsc_url_prefix: 'Search Console', ga4: 'GA4' }[p.type] ?? p.type) + ' · ' + p.external_id + (p.mode === 'live' ? '' : ' (fixture)');
+
+async function connectGoogle(site) {
+    const ctx = state.contexts[site];
+    const g = await api('/v1/google');
+    const connected = ctx.properties.length ? `<div class="connected"><div class="nav-title">Connected to ${esc(ctx.client.domain)}</div>${ctx.properties.map(p => `<div class="row between">
+        <span>${esc(propertyLabel(p))}</span><button class="secondary small" type="button" data-remove="${esc(p.id)}">Remove</button></div>`).join('')}</div>` : '';
+    const bindRemove = box => box.querySelectorAll('[data-remove]').forEach(b => b.onclick = async () => {
+        if (!confirm('Remove this property and its stored metrics?'))
+            return;
+        try {
+            await api('/v1/properties/' + encodeURIComponent(b.dataset.remove), 'DELETE');
+            box.remove();
+            await refresh();
+            await connectGoogle(site);
+        }
+        catch (e) {
+            toast(e.message);
+        }
+    });
+    if (!g.configured) {
+        const box = sheet('Connect Google data', `<p>This notebook reads Search Console and GA4 with a Google service account. Its JSON key is stored as a Worker secret, never in the database.</p>
+            <ol class="steps">
+                <li>In Google Cloud, enable the <strong>Search Console API</strong>, <strong>Google Analytics Data API</strong> and (for the pick list) <strong>Google Analytics Admin API</strong>.</li>
+                <li>Store the key as a secret, then reload this page:<pre>npx wrangler secret put GOOGLE_SERVICE_ACCOUNT --env production &lt; service-account.json</pre>
+                Running locally? Add it to <code>.dev.vars</code> as one line: <code>GOOGLE_SERVICE_ACCOUNT='…'</code> (<code>jq -c . service-account.json</code> prints it).</li>
+            </ol>${connected}`);
+        bindRemove(box);
+        return;
+    }
+    const domain = ctx.client.domain;
+    const have = new Set(ctx.properties.filter(p => p.mode === 'live').map(p => p.external_id));
+    const matchesSite = url => url === 'sc-domain:' + domain || (() => { try { return siteDomainOf(url) === domain; } catch { return false; } })();
+    const gscOptions = g.gsc.filter(x => !have.has(x.siteUrl));
+    const suggested = gscOptions.find(x => x.siteUrl === 'sc-domain:' + domain) ?? gscOptions.find(x => matchesSite(x.siteUrl));
+    const ga4Options = g.ga4.filter(x => !have.has(x.id));
+    const box = modal('Connect Google data · ' + domain, `<p class="muted">Give the service account read access, then pick the properties for this site.
+            Search Console: <em>Settings → Users and permissions → Add user</em> (Restricted is enough). GA4: <em>Admin → Property access management</em> (Viewer).</p>
+        <label>Service account<pre id="sa-email">${esc(g.email)}</pre></label>
+        <button class="secondary small" type="button" data-copy="sa-email">Copy email</button>
+        <label>Search Console property<select name="gsc">${opt('', gscOptions.length ? 'Don’t connect' : 'None visible to the service account yet')}${gscOptions.map(x => opt(x.siteUrl, x.siteUrl, x === suggested)).join('')}</select></label>
+        ${g.errors.gsc ? `<div class="warning">Search Console: ${esc(g.errors.gsc)}</div>` : ''}
+        ${ga4Options.length ? `<label>GA4 property<select name="ga4">${opt('', 'Don’t connect')}${ga4Options.map(x => opt(x.id, `${x.name} · ${x.account} (${x.id})`)).join('')}</select></label>` : ''}
+        <label>${ga4Options.length ? 'Or enter a GA4 property ID' : 'GA4 property ID (optional)'}<input name="ga4_id" inputmode="numeric" pattern="[0-9]+" placeholder="e.g. 312345678"></label>
+        ${g.errors.ga4 ? `<div class="warning">GA4 list unavailable: ${esc(g.errors.ga4)} You can still enter the property ID.</div>` : ''}
+        <p class="muted">Connecting pulls 16 months of history for this site’s pages. GA4 numbers are Organic Search sessions and key events by landing page.</p>
+        ${connected}`, async (b) => {
+        const picks = [];
+        if (b.gsc)
+            picks.push({ type: b.gsc.startsWith('sc-domain:') ? 'gsc_domain' : 'gsc_url_prefix', external_id: b.gsc });
+        const ga4 = (b.ga4_id || b.ga4 || '').trim();
+        if (ga4)
+            picks.push({ type: 'ga4', external_id: ga4 });
+        if (!picks.length)
+            throw new Error('Pick a Search Console or GA4 property.');
+        let queued = 0;
+        for (const p of picks)
+            queued += (await api('/v1/properties', 'POST', { client_id: site, ...p, mode: 'live', auth_type: 'service_account' })).queued;
+        toast(`Connected. ${queued} history jobs queued; data appears over the next few minutes.`);
+        await refresh();
+    }, 'Connect');
+    box.querySelector('[data-copy]').onclick = async (e) => {
+        await navigator.clipboard.writeText(g.email);
+        e.target.textContent = 'Copied';
+    };
+    bindRemove(box);
+}
+
+const siteDomainOf = url => new URL(url).hostname.toLowerCase().replace(/^www\./, '');
 
 function addPage(site) {
     modal('Add a page', input('url', 'Page URL', 'url') + input('canonical', 'Canonical URL (optional)', 'url', '', false), async (b) => {
