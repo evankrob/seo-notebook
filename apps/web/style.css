@@ -233,6 +233,7 @@ button.tag:hover { filter: none; border-color: var(--border-strong); }
 .impact-grid .down strong { color: var(--red-ink); }
 .impact-note { font-size: 13px; color: var(--text-2); margin: 0; }
 .warning { font-size: 12px; background: var(--amber-soft); border-radius: var(--radius-sm); padding: 10px 12px; color: var(--amber-ink); line-height: 1.5; }
+.sync-error { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 8px 0; overflow-wrap: anywhere; }
 details { font-size: 12px; }
 summary { cursor: pointer; color: var(--text-2); }
 .caveat { font-size: 11px; color: var(--muted); }

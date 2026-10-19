@@ -5,8 +5,8 @@ INSERT OR IGNORE INTO agent_token(id,org_id,name,model,token_hash,scopes) VALUES
 INSERT OR IGNORE INTO client(id,org_id,name,timezone,domain) VALUES ('cedar','demo-org','Cedar & Finch Supply','America/New_York','cedar.example');
 INSERT OR IGNORE INTO connection VALUES ('gsc-connection','demo-org','gsc','oauth','mock');
 INSERT OR IGNORE INTO connection VALUES ('ga-connection','demo-org','ga4','service_account','mock');
-INSERT OR IGNORE INTO property VALUES ('cedar-gsc','cedar','gsc_domain','sc-domain:cedar.example','gsc-connection');
-INSERT OR IGNORE INTO property VALUES ('cedar-ga4','cedar','ga4','fixture-123','ga-connection');
+INSERT OR IGNORE INTO property(id,client_id,type,external_id,connection_id) VALUES ('cedar-gsc','cedar','gsc_domain','sc-domain:cedar.example','gsc-connection');
+INSERT OR IGNORE INTO property(id,client_id,type,external_id,connection_id) VALUES ('cedar-ga4','cedar','ga4','fixture-123','ga-connection');
 INSERT OR IGNORE INTO page VALUES ('garden','cedar','https://cedar.example/garden-tools/','https://cedar.example/garden-tools/','["category"]');
 INSERT OR IGNORE INTO page VALUES ('guides','cedar','https://cedar.example/guides/','https://cedar.example/guides/','["control"]');
 INSERT OR IGNORE INTO page VALUES ('contact','cedar','https://cedar.example/contact/','https://cedar.example/contact/','["lead"]');

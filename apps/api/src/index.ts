@@ -112,7 +112,7 @@ app.post('/v1/properties', async (c) => {
     const id = crypto.randomUUID(), connection = crypto.randomUUID();
     await c.env.DB.batch([
         c.env.DB.prepare('INSERT INTO connection VALUES (?,?,?,?,?)').bind(connection, a.org_id, b.type === 'ga4' ? 'ga4' : 'gsc', b.mode === 'live' ? 'service_account' : b.auth_type, b.mode),
-        c.env.DB.prepare('INSERT INTO property VALUES (?,?,?,?,?)').bind(id, b.client_id, b.type, b.external_id, connection),
+        c.env.DB.prepare('INSERT INTO property(id,client_id,type,external_id,connection_id) VALUES (?,?,?,?,?)').bind(id, b.client_id, b.type, b.external_id, connection),
     ]);
     // Live properties start with sixteen months of history.
     const queued = b.mode === 'live' ? await fanout(c.env, id, true) : 0;
@@ -189,7 +189,10 @@ export default { fetch: app.fetch, async scheduled(_event: ScheduledController, 
             await processJob(env, msg.body);
             msg.ack();
         }
-        catch {
+        catch (e) {
+            const job = msg.body;
+            const target = job.kind === 'import' ? { importId: job.id } : { propertyId: job.propertyId };
+            console.error('queue job failed', JSON.stringify({ kind: job.kind, ...target, attempts: msg.attempts, error: e instanceof Error ? e.message : String(e) }));
             msg.retry({ delaySeconds: 30 });
         }
     } } };

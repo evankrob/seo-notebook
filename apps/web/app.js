@@ -383,6 +383,7 @@ function metricsHTML() {
             <select data-change="page" aria-label="Page">${opt('', 'All pages')}${ctx.pages.map(p => opt(p.id, pageLabel(ctx, p), p.id === state.page)).join('')}</select>
             <select data-change="metric" aria-label="Metric">${METRICS.map(m => opt(m, m.replace('_', ' '), m === state.metric)).join('')}</select>
         </div>
+        ${syncWarning(ctx.properties.find(p => p.id === state.property))}
         ${chart(state.metrics, markers)}
         <div class="legend"><span><i class="dot"></i>${esc(state.metric.replace('_', ' '))}</span><span><i class="dot amber"></i>Change logged · select to open</span></div>
     </section>`;
@@ -512,6 +513,8 @@ async function handle(e, type) {
                 return tools();
             case 'google':
                 return await connectGoogle(f.site || defaultSite());
+            case 'retry-sync':
+                return await retrySync(v);
         }
     }
     catch (err) {
@@ -705,14 +708,44 @@ async function pollImport(id) {
     toast('Import is still queued. Check /v1/imports/' + id);
 }
 
+/** The last live sync's Google error, with a link to the console page it names and a retry. */
+function syncWarning(p) {
+    if (!p?.last_sync_error)
+        return '';
+    const link = p.last_sync_error.match(/https:\/\/console\.(?:cloud|developers)\.google\.com\/[^\s"'<>]*/)?.[0]?.replace(/[.,;)]+$/, '');
+    return `<div class="warning sync-error">
+        <span><strong>Last sync failed${p.last_sync_at ? ' · ' + esc(shortDate(p.last_sync_at.slice(0, 10))) : ''}:</strong> ${esc(p.last_sync_error)}</span>
+        ${link ? `<a href="${esc(link)}" target="_blank" rel="noopener noreferrer">Open in Google Cloud</a>` : ''}
+        <button class="secondary small" type="button" data-action="retry-sync" data-value="${esc(p.id)}">Retry backfill</button>
+    </div>`;
+}
+
+async function retrySync(id) {
+    const r = await api(`/v1/properties/${encodeURIComponent(id)}/sync?backfill=true`, 'POST');
+    toast(`${r.queued} backfill jobs queued. Refresh in a few minutes.`);
+}
+
 const propertyLabel = p => ({ gsc_domain: 'Search Console', gsc_url_prefix: 'Search Console', ga4: 'GA4' }[p.type] ?? p.type) + ' · ' + p.external_id + (p.mode === 'live' ? '' : ' (fixture)');
 
 async function connectGoogle(site) {
     const ctx = state.contexts[site];
     const g = await api('/v1/google');
     const connected = ctx.properties.length ? `<div class="connected"><div class="nav-title">Connected to ${esc(ctx.client.domain)}</div>${ctx.properties.map(p => `<div class="row between">
-        <span>${esc(propertyLabel(p))}</span><button class="secondary small" type="button" data-remove="${esc(p.id)}">Remove</button></div>`).join('')}</div>` : '';
-    const bindRemove = box => box.querySelectorAll('[data-remove]').forEach(b => b.onclick = async () => {
+        <span>${esc(propertyLabel(p))}</span><button class="secondary small" type="button" data-remove="${esc(p.id)}">Remove</button></div>${syncWarning(p)}`).join('')}</div>` : '';
+    const bindRemove = box => {
+        box.querySelectorAll('[data-action="retry-sync"]').forEach(b => b.onclick = async (e) => {
+            e.stopPropagation();
+            try {
+                await retrySync(b.dataset.value);
+                b.disabled = true;
+            }
+            catch (err) {
+                toast(err.message);
+            }
+        });
+        bindRemoveButtons(box);
+    };
+    const bindRemoveButtons = box => box.querySelectorAll('[data-remove]').forEach(b => b.onclick = async () => {
         if (!confirm('Remove this property and its stored metrics?'))
             return;
         try {
