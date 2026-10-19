@@ -10,6 +10,8 @@ const FIELDS = ['title', 'meta_description', 'h1', 'headings', 'content', 'canon
 const TYPE_LABELS = { title_meta: 'Title & meta', new_page: 'New page', internal_links: 'Internal links', CRO_form: 'CRO · form', CRO_layout: 'CRO · layout', ppc_landing: 'PPC landing', external_event: 'External event' };
 const SOURCE_LABELS = { mcp: 'via MCP', api: 'via API', ui: 'by hand', import: 'imported' };
 const WEEKS = 20;
+// Performance chart ranges, in days; the first is the default.
+const RANGES = [[30, 'Last 30 days'], [90, 'Last 90 days'], [182, 'Last 6 months'], [487, 'Last 16 months']];
 
 const state = {
     me: null,
@@ -27,6 +29,7 @@ const state = {
     property: '',
     page: '',
     metric: 'clicks',
+    range: String(RANGES[0][0]),
     expanded: null,
     impacts: {},
 };
@@ -163,7 +166,7 @@ async function loadMetrics() {
         state.pageChanges = null;
         return;
     }
-    const q = new URLSearchParams({ client: ctx.client.id, property: state.property, metric: state.metric, since: iso(addDays(new Date(), -WEEKS * 7)), ...(state.page ? { page: state.page } : {}) });
+    const q = new URLSearchParams({ client: ctx.client.id, property: state.property, metric: state.metric, since: iso(addDays(new Date(), -Number(state.range))), ...(state.page ? { page: state.page } : {}) });
     const t = await api('/v1/timeline?' + q);
     state.metrics = t.metrics;
     state.pageChanges = state.page ? new Set(t.changes.map(c => c.id)) : null;
@@ -382,6 +385,7 @@ function metricsHTML() {
             <select data-change="property" aria-label="Property">${ctx.properties.map(p => opt(p.id, propertyLabel(p), p.id === state.property)).join('')}</select>
             <select data-change="page" aria-label="Page">${opt('', 'All pages')}${ctx.pages.map(p => opt(p.id, pageLabel(ctx, p), p.id === state.page)).join('')}</select>
             <select data-change="metric" aria-label="Metric">${METRICS.map(m => opt(m, m.replace('_', ' '), m === state.metric)).join('')}</select>
+            <select data-change="range" aria-label="Date range">${RANGES.map(([d, label]) => opt(d, label, String(d) === state.range)).join('')}</select>
         </div>
         ${syncWarning(ctx.properties.find(p => p.id === state.property))}
         ${chart(state.metrics, markers)}
