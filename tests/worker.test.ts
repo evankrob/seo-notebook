@@ -2,7 +2,7 @@ import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, readdirSync } from 'node:fs';
 import { createHash, generateKeyPairSync } from 'node:crypto';
-import { app } from '../apps/api/src/index';
+import worker, { app } from '../apps/api/src/index';
 import { processJob, fanout } from '../apps/api/src/jobs';
 import { clearTokenCache } from '../packages/connectors/google';
 import { followRedirects, isPublicURL } from '../apps/api/src/redirects';
@@ -310,11 +310,56 @@ describe('Live Google properties', () => {
         expect(lookups).toHaveLength(0);
     });
 
+    it('records a failing GA4 sync on the property, shows it in context and clears it after a success', async () => {
+        env.GOOGLE_SERVICE_ACCOUNT = key();
+        const disabled = 'Google Analytics Data API has not been used in project 123 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/analyticsdata.googleapis.com/overview?project=123 then retry.';
+        let ga4Enabled = false;
+        const original = vi.mocked(fetch).getMockImplementation()!;
+        vi.mocked(fetch).mockImplementation(async (input, init) => {
+            if (!String(input).includes(':runReport'))
+                return original(input, init);
+            return ga4Enabled
+                ? Response.json({ rows: [{ dimensionValues: [{ value: '20261001' }, { value: '/garden/' }], metricValues: [{ value: '5' }, { value: '1' }] }], rowCount: 1 })
+                : Response.json({ error: { code: 403, message: disabled, status: 'PERMISSION_DENIED' } }, { status: 403 });
+        });
+        const r = await request('/v1/properties', 'POST', { client_id: 'cedar', type: 'ga4', external_id: '42', mode: 'live' }, human);
+        expect(r.status).toBe(201);
+        const { id } = await r.json() as { id: string };
+        const job = jobs.find(j => j.kind === 'sync_range' && j.propertyId === id)!;
+        type Prop = { id: string; last_sync_at: string | null; last_sync_error: string | null; last_sync_ok_at: string | null };
+        const prop = async () => (await (await request('/v1/clients/cedar/context')).json() as { properties: Prop[] }).properties.find(p => p.id === id)!;
+        expect(await prop()).toMatchObject({ last_sync_at: null, last_sync_error: null, last_sync_ok_at: null });
+        await expect(processJob(env, job)).rejects.toThrow('has not been used');
+        const failed = await prop();
+        expect(failed.last_sync_error).toBe(disabled);
+        expect(failed.last_sync_at).toBeTruthy();
+        expect(failed.last_sync_ok_at).toBeNull();
+        ga4Enabled = true;
+        await processJob(env, job);
+        const ok = await prop();
+        expect(ok.last_sync_error).toBeNull();
+        expect(ok.last_sync_ok_at).toBe(ok.last_sync_at);
+        sqlite.exec("INSERT INTO org VALUES ('other','Other','self-host'); INSERT INTO client(id,org_id,name,timezone,domain) VALUES ('other-client','other','Other','UTC','other.example');");
+        expect((await request('/v1/clients/other-client/context')).status).toBe(404);
+    });
+
+    it('logs failed queue jobs with kind and property, then retries', async () => {
+        const errors = vi.spyOn(console, 'error').mockImplementation(() => { });
+        const msg = { body: { kind: 'sync_range', propertyId: 'unkeyed-prop', start: '2026-10-01', end: '2026-10-02' } as Job, attempts: 2, ack: vi.fn(), retry: vi.fn() };
+        env.GOOGLE_SERVICE_ACCOUNT = undefined;
+        sqlite.exec("INSERT INTO connection VALUES ('live-conn','demo-org','ga4','service_account','live'); INSERT INTO property(id,client_id,type,external_id,connection_id) VALUES ('unkeyed-prop','cedar','ga4','42','live-conn');");
+        await worker.queue({ messages: [msg] } as unknown as MessageBatch<Job>, env);
+        expect(msg.retry).toHaveBeenCalledOnce();
+        expect(msg.ack).not.toHaveBeenCalled();
+        const line = String(errors.mock.calls[0][1]);
+        expect(JSON.parse(line)).toMatchObject({ kind: 'sync_range', propertyId: 'unkeyed-prop', attempts: 2, error: 'GOOGLE_SERVICE_ACCOUNT is not configured' });
+    });
+
     it('keeps Google setup admin-only and other workspaces out', async () => {
         env.GOOGLE_SERVICE_ACCOUNT = key();
         expect((await request('/v1/google')).status).toBe(403);
         expect((await request('/v1/properties', 'POST', gsc)).status).toBe(403);
-        sqlite.exec("INSERT INTO org VALUES ('other','Other','self-host'); INSERT INTO client(id,org_id,name,timezone,domain) VALUES ('other-client','other','Other','UTC','other.example'); INSERT INTO property VALUES ('other-prop','other-client','gsc_domain','sc-domain:other.example',NULL);");
+        sqlite.exec("INSERT INTO org VALUES ('other','Other','self-host'); INSERT INTO client(id,org_id,name,timezone,domain) VALUES ('other-client','other','Other','UTC','other.example'); INSERT INTO property(id,client_id,type,external_id,connection_id) VALUES ('other-prop','other-client','gsc_domain','sc-domain:other.example',NULL);");
         expect((await request('/v1/properties', 'POST', { ...gsc, client_id: 'other-client' }, human)).status).toBe(404);
         expect((await request('/v1/properties/other-prop', 'DELETE', undefined, human)).status).toBe(404);
         expect((await request('/v1/properties/other-prop/sync', 'POST', undefined, human)).status).toBe(404);

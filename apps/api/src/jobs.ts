@@ -1,5 +1,5 @@
 import { connector, syncWindow } from '../../../packages/connectors';
-import { parseServiceAccount, syncAnalytics, syncSearchConsole } from '../../../packages/connectors/google';
+import { GoogleError, parseServiceAccount, syncAnalytics, syncSearchConsole } from '../../../packages/connectors/google';
 import { parseCSV } from '../../../packages/connectors/csv';
 import { day, date, logChange, storeMetrics } from './service';
 import type { Env, Job, Metric } from './types';
@@ -63,7 +63,17 @@ async function syncLive(env: Env, job: Extract<Job, { kind: 'sync_range' }>) {
     if (!pages.length)
         return;
     const request = { propertyId: p.id, externalId: p.external_id, pages, start: job.start, end: job.end, today: new Date().toISOString().slice(0, 10) };
-    await storeMetrics(env, p.type === 'ga4' ? await syncAnalytics(sa, request) : await syncSearchConsole(sa, request));
+    const now = new Date().toISOString();
+    try {
+        await storeMetrics(env, p.type === 'ga4' ? await syncAnalytics(sa, request) : await syncSearchConsole(sa, request));
+    }
+    catch (e) {
+        // Google's message says what to fix (e.g. "API has not been used in project … enable it by visiting https://…").
+        if (e instanceof GoogleError)
+            await env.DB.prepare('UPDATE property SET last_sync_at=?,last_sync_error=? WHERE id=?').bind(now, e.message, p.id).run();
+        throw e;
+    }
+    await env.DB.prepare('UPDATE property SET last_sync_at=?,last_sync_ok_at=?,last_sync_error=NULL WHERE id=?').bind(now, now, p.id).run();
 }
 
 const metricSchema = z.object({ property_id: z.string(), page_id: z.string(), date, metric: z.enum(['clicks', 'impressions', 'ctr', 'position', 'sessions', 'key_events', 'revenue', 'custom']), value: z.coerce.number().finite().nonnegative(), data_state: z.enum(['final', 'fresh']).default('final') });
