@@ -8,3 +8,5 @@ npm ci
 npm run dev       # http://localhost:4321
 npm run deploy    # astro build && wrangler deploy (Worker: seo-notebook-site)
 ```
+
+The share preview `public/og.png` is rendered from `og/card.html`: edit the HTML, then run `node og/render.mjs` (needs Chrome; set `CHROME` if it isn't in the macOS default location).
