@@ -141,6 +141,29 @@ export async function syncSearchConsole(sa: ServiceAccount, r: RangeRequest): Pr
     return out;
 }
 
+const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * The variant of `url` (same path; http or https; with or without www) that Search Console
+ * reports, by most impressions over the last 90 days. Null when Google has no data for it.
+ */
+export async function reportedPageURL(sa: ServiceAccount, externalId: string, url: string, today: string): Promise<string | null> {
+    const u = new URL(url);
+    const pattern = `^https?://(www\\.)?${escapeRegex(u.hostname.replace(/^www\./, ''))}${escapeRegex(u.pathname)}$`;
+    const res = await call<{ rows?: GscRow[] }>(sa, `${GSC}/sites/${encodeURIComponent(externalId)}/searchAnalytics/query`, {
+        startDate: day(today, -90),
+        endDate: today,
+        dimensions: ['page'],
+        dimensionFilterGroups: [{ filters: [{ dimension: 'page', operator: 'includingRegex', expression: pattern }] }],
+        type: 'web',
+        dataState: 'all',
+        rowLimit: 10,
+    });
+    const re = new RegExp(pattern);
+    const best = (res.rows ?? []).filter(r => re.test(r.keys[0])).reduce<GscRow | undefined>((a, b) => !a || b.impressions > a.impressions ? b : a, undefined);
+    return best?.keys[0] ?? null;
+}
+
 interface Ga4Report { rows?: { dimensionValues: { value: string }[]; metricValues: { value: string }[] }[]; rowCount?: number }
 
 /** Organic Search sessions and key events by landing page, for all requested pages in a few calls. */

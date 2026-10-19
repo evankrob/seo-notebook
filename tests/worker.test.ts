@@ -270,6 +270,46 @@ describe('Live Google properties', () => {
         expect(sqlite.prepare('SELECT COUNT(*) n FROM metric_series WHERE property_id=?').get(p.id)?.n).toBe(0);
     });
 
+    it('stores the page URL Search Console reports, falling back to redirects when it has none or fails', async () => {
+        env.GOOGLE_SERVICE_ACCOUNT = key();
+        expect((await request('/v1/properties', 'POST', gsc, human)).status).toBe(201);
+        let gscRows: unknown = [];
+        const lookups: { expression: string; dimensions: string[] }[] = [];
+        const heads: string[] = [];
+        const original = vi.mocked(fetch).getMockImplementation()!;
+        vi.mocked(fetch).mockImplementation(async (input, init) => {
+            const url = String(input);
+            const body = typeof init?.body === 'string' && url.includes('searchAnalytics') ? JSON.parse(init.body) : null;
+            if (body?.dimensions[0] === 'page') {
+                lookups.push({ expression: body.dimensionFilterGroups[0].filters[0].expression, dimensions: body.dimensions });
+                return gscRows === 'error' ? new Response('{}', { status: 500 }) : Response.json({ rows: gscRows });
+            }
+            if (init?.method === 'HEAD') {
+                heads.push(url);
+                return url === 'https://cedar.example/old-guide/' ? new Response(null, { status: 301, headers: { Location: 'https://cedar.example/new-guide/' } }) : new Response(null);
+            }
+            return original(input, init);
+        });
+        const log = async (url: string) => {
+            const r = await request('/v1/changes', 'POST', { url, summary: 'Guide edit', rationale: 'Test' });
+            expect(r.status).toBe(201);
+            return sqlite.prepare('SELECT url FROM page WHERE id=?').get((await r.json() as { page_ids: string[] }).page_ids[0])?.url;
+        };
+        gscRows = [{ keys: ['https://cedar.example/guide/'], impressions: 3 }, { keys: ['https://www.cedar.example/guide/'], impressions: 80 }, { keys: ['https://evil.example/guide/'], impressions: 999 }];
+        expect(await log('http://cedar.example/guide/')).toBe('https://www.cedar.example/guide/');
+        expect(lookups[0].expression).toBe('^https?://(www\\.)?cedar\\.example/guide/$');
+        expect(heads).toHaveLength(0); // Google answered; the site is never fetched
+        gscRows = [];
+        expect(await log('https://cedar.example/old-guide/')).toBe('https://cedar.example/new-guide/');
+        gscRows = 'error';
+        expect(await log('https://cedar.example/other/')).toBe('https://cedar.example/other/');
+        expect(heads).toEqual(['https://cedar.example/old-guide/', 'https://cedar.example/new-guide/', 'https://cedar.example/other/']);
+        sqlite.exec("INSERT INTO org VALUES ('other','Other','self-host'); INSERT INTO client(id,org_id,name,timezone,domain) VALUES ('other-client','other','Other','UTC','other.example');");
+        lookups.length = 0;
+        expect((await request('/v1/pages', 'POST', { client_id: 'other-client', url: 'https://other.example/guide/' }, human)).status).toBe(404);
+        expect(lookups).toHaveLength(0);
+    });
+
     it('keeps Google setup admin-only and other workspaces out', async () => {
         env.GOOGLE_SERVICE_ACCOUNT = key();
         expect((await request('/v1/google')).status).toBe(403);
