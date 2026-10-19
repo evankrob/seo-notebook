@@ -1,6 +1,6 @@
 # SEO Notebook
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/evankrob/seo-notebook) · [seonotebook.dev](https://seonotebook.dev)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/evankrob/seo-notebook) · [seonotebook.dev](https://www.seonotebook.dev)
 
 A self-hosted change log that your AI agents write to. When you work on your SEO with an agent and it edits a page (a title, a meta description, an H1, a block of content), it records what changed, the old and new values, and why. The notebook then lines those changes up against Google Search Console and Google Analytics so you can see the before and after.
 
