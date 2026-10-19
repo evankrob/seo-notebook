@@ -22,7 +22,14 @@ const changes=[
  ['next-links','2026-10-20','planned','internal_links',['garden'],'Link buying guides to category pages','Help readers discover the next useful step.','demo-human','Alex Morgan','human','ui','clicks'],
  ['reverted-test','2026-08-12','reverted','CRO_layout',['contact'],'Reverted the sticky inquiry button','The experimental button obscured supporting information.','demo-human','Alex Morgan','human','ui','sessions']
 ];
-for(const [id,date,status,type,pages,summary,why,author,name,kind,source,metric] of changes){sql+='INSERT OR IGNORE INTO change_entry(id,client_id,occurred_at,timezone,status,type,page_ids,group_id,sitewide,summary,rationale,author_id,author_name,author_kind,model,source,evidence,expected_metric,tags,created_at,updated_at,diff) VALUES ('+[id,'cedar',date,'America/New_York',status,type,JSON.stringify(pages),null,0,summary,why,author,name,kind,kind==='agent'?'fixture-model':null,source,'[]',metric,'[]','2026-10-14T12:00:00Z','2026-10-14T12:00:00Z',JSON.stringify(id==='title-refresh'?[{field:'title',before:'Garden Tools | Cedar & Finch',after:'Durable Garden Tools for Small Yards | Cedar & Finch'}]:[])].map(v=>v===null?'NULL':quote(v)).join(',')+');\n';}
+// Tags and field diffs give the timeline's filters and callouts something to show.
+const tags={'title-refresh':['titles','category'],'form-layout':['cro','forms'],'overlap-copy':['content','faq'],'next-links':['internal-links','category'],'reverted-test':['cro']};
+const diffs={
+ 'title-refresh':[{field:'title',before:'Garden Tools | Cedar & Finch',after:'Durable Garden Tools for Small Yards | Cedar & Finch'}],
+ 'overlap-copy':[{field:'content',before:null,after:'Delivery FAQ: lead times, freight minimums and returns, placed above the inquiry form.',note:'New section'}],
+ 'next-links':[{field:'internal_links',before:'0 links to /garden-tools/',after:'4 contextual links from buying guides'}]
+};
+for(const [id,date,status,type,pages,summary,why,author,name,kind,source,metric] of changes){sql+='INSERT OR IGNORE INTO change_entry(id,client_id,occurred_at,timezone,status,type,page_ids,group_id,sitewide,summary,rationale,author_id,author_name,author_kind,model,source,evidence,expected_metric,tags,created_at,updated_at,diff) VALUES ('+[id,'cedar',date,'America/New_York',status,type,JSON.stringify(pages),null,0,summary,why,author,name,kind,kind==='agent'?'fixture-model':null,source,'[]',metric,JSON.stringify(tags[id]??[]),'2026-10-14T12:00:00Z','2026-10-14T12:00:00Z',JSON.stringify(diffs[id]??[])].map(v=>v===null?'NULL':quote(v)).join(',')+');\n';}
 for(let d=new Date('2026-08-01T00:00:00Z');d<=new Date('2026-10-14T00:00:00Z');d.setUTCDate(d.getUTCDate()+1)){
  const date=d.toISOString().slice(0,10),day=Math.floor(d.getTime()/86400000),fresh=date>='2026-10-12';
  ['garden','guides','contact'].forEach((page,i)=>{const base=18+i*3+(day%7),uplift=date>='2026-09-05'&&i===0?1.35:1;
