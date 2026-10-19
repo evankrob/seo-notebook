@@ -5,7 +5,7 @@ import { eq } from 'drizzle-orm';
 import { clients } from './schema';
 import type { Actor, Bindings, Env, Job } from './types';
 import { accessConfigured, authenticate, hash } from './auth';
-import { HttpError, client, date, day, getImpact, impactCache, listSites, siteDomain, listChanges, logChange, normalizeURL, scope, updateChange } from './service';
+import { HttpError, client, date, day, getImpact, impactCache, listSites, siteDomain, listChanges, logChange, normalizeURL, pageURL, scope, updateChange } from './service';
 import { backfillPage, fanout, processJob } from './jobs';
 import { discover, parseServiceAccount } from '../../../packages/connectors/google';
 import { mcp } from './mcp';
@@ -60,7 +60,22 @@ app.get('/v1/clients/:id/context', async (c) => { const a = c.get('actor'); scop
         'SELECT * FROM page WHERE client_id=?',
         'SELECT * FROM page_group WHERE client_id=?',
     ].map(sql => c.env.DB.prepare(sql).bind(cl.id).all())); return c.json({ client: cl, properties: properties.results, pages: pages.results, groups: groups.results }); });
-app.post('/v1/pages', async (c) => { const a = c.get('actor'); admin(a); const b = z.object({ client_id: z.string(), url: z.string().url(), canonical: z.string().url().optional(), tags: z.array(z.string()).default([]) }).parse(await body(c)); await client(c.env, a, b.client_id); const id = crypto.randomUUID(); await c.env.DB.prepare('INSERT INTO page VALUES (?,?,?,?,?)').bind(id, b.client_id, normalizeURL(b.url), b.canonical ? normalizeURL(b.canonical) : null, JSON.stringify(b.tags)).run(); await backfillPage(c.env, b.client_id, id); return c.json({ id, ...b }, 201); });
+const pageSchema = z.object({ client_id: z.string(), url: z.string().url(), canonical: z.string().url().optional(), tags: z.array(z.string()).default([]) }).strict();
+app.post('/v1/pages', async (c) => {
+    const a = c.get('actor');
+    admin(a);
+    const b = pageSchema.parse(await body(c));
+    await client(c.env, a, b.client_id);
+    // Store the URL Search Console reports (after redirects); reuse the page if it already exists.
+    const url = await pageURL(c.env, b.client_id, normalizeURL(b.url));
+    const existing = await c.env.DB.prepare('SELECT id FROM page WHERE client_id=? AND url=?').bind(b.client_id, url).first<{ id: string }>();
+    if (existing)
+        return c.json({ ...b, id: existing.id, url, existing: true });
+    const id = crypto.randomUUID();
+    await c.env.DB.prepare('INSERT INTO page VALUES (?,?,?,?,?)').bind(id, b.client_id, url, b.canonical ? normalizeURL(b.canonical) : null, JSON.stringify(b.tags)).run();
+    await backfillPage(c.env, b.client_id, id);
+    return c.json({ ...b, id, url }, 201);
+});
 app.post('/v1/groups', async (c) => { const a = c.get('actor'); admin(a); const b = z.object({ client_id: z.string(), name: z.string().min(1), page_ids: z.array(z.string()).min(1).max(200) }).parse(await body(c)); await client(c.env, a, b.client_id); for (const id of b.page_ids)
     if (!await c.env.DB.prepare('SELECT id FROM page WHERE id=? AND client_id=?').bind(id, b.client_id).first())
         throw new HttpError(400, 'Page outside client'); const id = crypto.randomUUID(); await c.env.DB.prepare('INSERT INTO page_group VALUES (?,?,?,?)').bind(id, b.client_id, b.name, JSON.stringify([...new Set(b.page_ids)])).run(); return c.json({ id, ...b }, 201); });

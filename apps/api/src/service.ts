@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { day, impact, windows } from '../../../packages/impact';
 import type { Actor, Change, Env, Metric } from './types';
 import { hash } from './auth';
+import { followRedirects } from './redirects';
 export class HttpError extends Error {
     constructor(public status: number, message: string) { super(message); }
 }
@@ -143,7 +144,24 @@ export async function ensureSite(env: Env, actor: Actor, domain: string, timezon
     await env.DB.prepare('INSERT OR IGNORE INTO client(id,org_id,name,timezone,domain) VALUES (?,?,?,?,?)').bind(crypto.randomUUID(), actor.org_id, domain, timezone, domain).run();
     return (await find())!;
 }
-async function ensurePage(env: Env, clientId: string, url: string) {
+/**
+ * The URL to store for a page: an existing page with this exact URL, else where the URL
+ * redirects to on the same site (Search Console reports the final URL), else the URL as sent.
+ */
+export async function pageURL(env: Env, clientId: string, url: string): Promise<string> {
+    if (await env.DB.prepare('SELECT id FROM page WHERE client_id=? AND url=?').bind(clientId, url).first())
+        return url;
+    let final: string;
+    try {
+        final = normalizeURL(await followRedirects(url));
+    }
+    catch {
+        return url;
+    }
+    return siteDomain(final) === siteDomain(url) ? final : url;
+}
+async function ensurePage(env: Env, clientId: string, sent: string) {
+    const url = await pageURL(env, clientId, sent);
     const r = await env.DB.prepare("INSERT OR IGNORE INTO page(id,client_id,url,canonical,tags) VALUES (?,?,?,NULL,'[]')").bind(crypto.randomUUID(), clientId, url).run();
     const id = (await env.DB.prepare('SELECT id FROM page WHERE client_id=? AND url=?').bind(clientId, url).first<{ id: string }>())!.id;
     // A new page has no metrics yet; pull its history from any live Google property of the site.

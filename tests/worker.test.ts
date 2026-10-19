@@ -5,6 +5,7 @@ import { createHash, generateKeyPairSync } from 'node:crypto';
 import { app } from '../apps/api/src/index';
 import { processJob, fanout } from '../apps/api/src/jobs';
 import { clearTokenCache } from '../packages/connectors/google';
+import { followRedirects, isPublicURL } from '../apps/api/src/redirects';
 import type { Env, Job } from '../apps/api/src/types';
 // Real SQLite schema/constraints with D1's asynchronous statement contract.
 class Statement {
@@ -31,6 +32,9 @@ beforeEach(() => { sqlite = new DatabaseSync(':memory:'); for (const f of readdi
             body: Job;
         }[]) => { jobs.push(...js.map(j => j.body)); } } as unknown as Queue<Job>, ASSETS: { fetch: async () => new Response('assets') } as unknown as Fetcher, CONNECTOR_MODE: 'mock' }; });
 afterEach(() => sqlite.close());
+// No real network: page creation follows redirects with fetch, so unmocked calls fail fast (and fall back).
+beforeEach(() => { vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('network disabled in tests'); })); });
+afterEach(() => vi.unstubAllGlobals());
 const auth = { Authorization: 'Bearer demo-agent-token-not-a-secret' };
 function request(path: string, method = 'GET', body?: unknown, headers: Record<string, string> = {}) { return app.request('http://localhost:8787' + path, { method, headers: { ...auth, ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers }, body: body ? JSON.stringify(body) : undefined }, env); }
 const change = { client_id: 'cedar', occurred_at: '2026-08-20', type: 'content', summary: 'A test change', rationale: 'A test hypothesis', page_ids: ['garden'] };
@@ -275,5 +279,80 @@ describe('Live Google properties', () => {
         expect((await request('/v1/properties/other-prop', 'DELETE', undefined, human)).status).toBe(404);
         expect((await request('/v1/properties/other-prop/sync', 'POST', undefined, human)).status).toBe(404);
         expect(sqlite.prepare("SELECT COUNT(*) n FROM property WHERE id='other-prop'").get()?.n).toBe(1);
+    });
+});
+
+describe('redirect resolution for new pages', () => {
+    const human = { Authorization: '', Origin: 'http://localhost:8787' };
+    const base = { summary: 'Rewrote the home title', rationale: 'Match the brand query' };
+    const pageUrl = (id: string) => sqlite.prepare('SELECT url FROM page WHERE id=?').get(id)?.url;
+    const site = (org = 'demo-org') => (sqlite.prepare("SELECT id FROM client WHERE domain='raleighdigital.com' AND org_id=?").get(org) as { id: string } | undefined)?.id;
+    let calls: { url: string; method: string }[];
+    function web(routes: Record<string, Response | ((method: string) => Response)>) {
+        calls = [];
+        vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init?: RequestInit) => {
+            const url = String(input), method = init?.method ?? 'GET';
+            calls.push({ url, method });
+            expect(init?.redirect).toBe('manual');
+            const r = routes[url];
+            if (!r)
+                throw new Error('unexpected fetch ' + url);
+            return typeof r === 'function' ? r(method) : r.clone();
+        }));
+    }
+    const moved = (to: string, status = 301) => new Response(null, { status, headers: { Location: to } });
+
+    it('stores the URL Search Console reports and reuses that page for other variants', async () => {
+        web({ 'https://raleighdigital.com/': moved('https://www.raleighdigital.com/'), 'http://raleighdigital.com/': moved('https://raleighdigital.com/'), 'https://www.raleighdigital.com/': new Response(null) });
+        const a = await (await request('/v1/changes', 'POST', { ...base, url: 'https://raleighdigital.com/' })).json() as { page_ids: string[] };
+        expect(pageUrl(a.page_ids[0])).toBe('https://www.raleighdigital.com/');
+        expect(calls.every(c => c.method === 'HEAD')).toBe(true);
+        const b = await (await request('/v1/changes', 'POST', { ...base, url: 'http://raleighdigital.com/' })).json() as { page_ids: string[] };
+        expect(b.page_ids).toEqual(a.page_ids);
+        calls = [];
+        const c = await (await request('/v1/changes', 'POST', { ...base, url: 'https://www.raleighdigital.com/' })).json() as { page_ids: string[] };
+        expect(c.page_ids).toEqual(a.page_ids);
+        expect(calls).toHaveLength(0); // an existing page URL needs no fetch
+        const p = await request('/v1/pages', 'POST', { client_id: site(), url: 'https://raleighdigital.com/' }, human);
+        expect(p.status).toBe(200);
+        expect(await p.json()).toMatchObject({ id: a.page_ids[0], url: 'https://www.raleighdigital.com/', existing: true });
+        expect(sqlite.prepare('SELECT COUNT(*) n FROM page WHERE client_id=?').get(site()!)?.n).toBe(1);
+    });
+
+    it('creates pages at the redirect target through POST /v1/pages, falling back to GET when HEAD is refused', async () => {
+        web({ 'https://cedar.example/old-guide/': m => m === 'HEAD' ? new Response(null, { status: 405 }) : moved('/new-guide/', 308), 'https://cedar.example/new-guide/': new Response('ok') });
+        const r = await request('/v1/pages', 'POST', { client_id: 'cedar', url: 'https://cedar.example/old-guide/?ref=1' }, human);
+        expect(r.status).toBe(201);
+        expect(pageUrl((await r.json() as { id: string }).id)).toBe('https://cedar.example/new-guide/');
+        expect(calls.map(c => c.method)).toEqual(['HEAD', 'GET', 'HEAD']);
+    });
+
+    it('never fails logging: keeps the URL as sent on errors, off-site or private redirects', async () => {
+        web({ 'https://cedar.example/away/': moved('https://elsewhere.example/'), 'https://cedar.example/inside/': moved('http://169.254.169.254/latest/'), 'https://cedar.example/loop/': moved('https://cedar.example/loop/') });
+        for (const path of ['away/', 'inside/', 'down/']) {
+            const r = await request('/v1/changes', 'POST', { ...base, url: 'https://cedar.example/' + path });
+            expect(r.status).toBe(201);
+            expect(pageUrl((await r.json() as { page_ids: string[] }).page_ids[0])).toBe('https://cedar.example/' + path);
+        }
+        expect(calls.some(c => c.url.includes('169.254'))).toBe(false);
+        expect(await followRedirects('https://cedar.example/loop/')).toBe('https://cedar.example/loop/');
+        expect(await followRedirects('http://localhost:8787/')).toBe('http://localhost:8787/');
+        expect(calls.filter(c => c.url.includes('/loop/'))).toHaveLength(5);
+        for (const u of ['http://127.0.0.1/', 'http://10.0.0.1/', 'http://[::1]/', 'http://192.168.1.1/', 'http://2130706433/', 'https://intranet/', 'https://x.internal/', 'https://example.com:8443/', 'ftp://example.com/'])
+            expect(isPublicURL(new URL(u)), u).toBe(false);
+        expect(isPublicURL(new URL('https://www.raleighdigital.com/'))).toBe(true);
+    });
+
+    it('keeps other workspaces out: foreign sites 404 and their pages are never reused', async () => {
+        sqlite.exec("INSERT INTO org VALUES ('other','Other','self-host'); INSERT INTO client(id,org_id,name,timezone,domain) VALUES ('other-rd','other','RD','UTC','raleighdigital.com'); INSERT INTO page(id,client_id,url,canonical,tags) VALUES ('other-home','other-rd','https://www.raleighdigital.com/',NULL,'[]');");
+        web({ 'https://raleighdigital.com/': moved('https://www.raleighdigital.com/'), 'https://www.raleighdigital.com/': new Response(null) });
+        const foreign = await request('/v1/pages', 'POST', { client_id: 'other-rd', url: 'https://raleighdigital.com/' }, human);
+        expect(foreign.status).toBe(404);
+        expect(calls).toHaveLength(0);
+        const r = await (await request('/v1/changes', 'POST', { ...base, url: 'https://raleighdigital.com/' })).json() as { client_id: string; page_ids: string[] };
+        expect(r.client_id).toBe(site());
+        expect(r.client_id).not.toBe('other-rd');
+        expect(r.page_ids).not.toContain('other-home');
+        expect(pageUrl(r.page_ids[0])).toBe('https://www.raleighdigital.com/');
     });
 });
