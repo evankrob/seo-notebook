@@ -645,7 +645,7 @@ function tools() {
             <button class="secondary" data-tool="sync">↻ Sync last 7 days</button>
             <button class="secondary" data-tool="backfill">↻ Backfill 16 months</button>
             <button class="secondary" data-tool="upload">↑ Upload CSV</button>
-            <button class="secondary" data-tool="property">+ Connect fixture property</button>
+            ${state.me.auth === 'local' ? '<button class="secondary" data-tool="property">+ Connect fixture property</button>' : ''}
             <button class="secondary" data-tool="page">+ Add page</button>
             <button class="secondary" data-tool="group">+ Create page group</button>
             <button class="secondary" data-tool="site">+ Add site</button>
