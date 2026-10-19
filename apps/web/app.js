@@ -316,6 +316,11 @@ function timelineHTML(list) {
     }).join('');
 }
 
+// Paths alone are ambiguous when a site has pages on more than one host (www and bare domain).
+const pageLabel = (ctx, p) => {
+    const hosts = new Set(ctx.pages.map(x => x.url.replace(/^https?:\/\//, '').split('/')[0]));
+    return hosts.size > 1 ? shortURL(p.url) : pagePath(p.url);
+};
 const pagePath = url => { try { const u = new URL(url); return u.pathname + u.search; } catch { return url; } };
 const shortURL = url => url.replace(/^https?:\/\//, '').replace(/\/$/, '');
 
@@ -375,7 +380,7 @@ function metricsHTML() {
         <div class="row between"><h2>Performance</h2>${ctx.properties.find(p => p.id === state.property)?.mode === 'live' ? '<span class="pill">LIVE · GOOGLE</span>' : '<span class="pill quiet">FIXTURE DATA</span>'}</div>
         <div class="filters">
             <select data-change="property" aria-label="Property">${ctx.properties.map(p => opt(p.id, propertyLabel(p), p.id === state.property)).join('')}</select>
-            <select data-change="page" aria-label="Page">${opt('', 'All pages')}${ctx.pages.map(p => opt(p.id, pagePath(p.url), p.id === state.page)).join('')}</select>
+            <select data-change="page" aria-label="Page">${opt('', 'All pages')}${ctx.pages.map(p => opt(p.id, pageLabel(ctx, p), p.id === state.page)).join('')}</select>
             <select data-change="metric" aria-label="Metric">${METRICS.map(m => opt(m, m.replace('_', ' '), m === state.metric)).join('')}</select>
         </div>
         ${chart(state.metrics, markers)}
@@ -386,7 +391,7 @@ function metricsHTML() {
 function chart(metrics, changes, metric = state.metric) {
     const dates = [...new Set(metrics.map(m => m.date))].sort();
     if (!dates.length)
-        return '<div class="empty">No metrics yet. Queue a fixture sync or upload a CSV.</div>';
+        return '<div class="empty">No metrics yet. Google data appears a few minutes after a property is connected.</div>';
     const totals = dates.map(d => metrics.filter(m => m.date === d).reduce((s, m) => s + m.value, 0));
     const max = Math.max(...totals, 1), x = i => 40 + i / Math.max(dates.length - 1, 1) * 640, y = v => 165 - v / max * 130;
     const path = totals.map((v, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ',' + y(v).toFixed(1)).join(' ');
@@ -578,7 +583,7 @@ const input = (name, label, type = 'text', value = '', required = true) => `<lab
 const siteSelect = (selected, name = 'site') => `<label>Site<select name="${name}">${state.sites.map(s => opt(s.id, s.domain ?? s.name, s.id === selected)).join('')}</select></label>`;
 const defaultSite = () => state.filter.site || state.sites[0]?.id;
 const scopeOptions = (ctx, selected) => opt('sitewide', 'Sitewide', selected === 'sitewide')
-    + ctx.pages.map(p => opt(p.id, pagePath(p.url), p.id === selected)).join('')
+    + ctx.pages.map(p => opt(p.id, pageLabel(ctx, p), p.id === selected)).join('')
     + ctx.groups.map(g => opt('group:' + g.id, 'Group · ' + g.name, 'group:' + g.id === selected)).join('');
 
 function changeForm(existing) {
@@ -790,7 +795,7 @@ function addGroup(site) {
     const pages = state.contexts[site].pages;
     if (!pages.length)
         return toast('Add a page first.');
-    modal('Create a page group', input('name', 'Group name') + `<fieldset class="form-grid"><legend class="muted">Pages</legend>${pages.map(p => `<label class="row"><input type="checkbox" name="page" value="${esc(p.id)}">${esc(pagePath(p.url))}</label>`).join('')}</fieldset>`, async (b, fd) => {
+    modal('Create a page group', input('name', 'Group name') + `<fieldset class="form-grid"><legend class="muted">Pages</legend>${pages.map(p => `<label class="row"><input type="checkbox" name="page" value="${esc(p.id)}">${esc(pageLabel(state.contexts[site], p))}</label>`).join('')}</fieldset>`, async (b, fd) => {
         const ids = fd.getAll('page');
         if (!ids.length)
             throw new Error('Pick at least one page.');
