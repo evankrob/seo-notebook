@@ -108,7 +108,7 @@ describe('Cloudflare Access identity', () => {
         const sig = Buffer.from(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(head + '.' + body))).toString('base64url');
         return `${head}.${body}.${sig}`;
     }
-    const claims = (extra: Record<string, unknown> = {}) => ({ aud: [aud], iss: `https://${team}`, exp: Math.floor(Date.now() / 1000) + 600, email: 'Evan@RaleighDigital.com', ...extra });
+    const claims = (extra: Record<string, unknown> = {}) => ({ aud: [aud], iss: `https://${team}`, exp: Math.floor(Date.now() / 1000) + 600, email: 'Owner@Agency.example', ...extra });
     const me = (headers: Record<string, string>, url = 'https://notebook.example/v1/me') => app.request(url, { headers }, env);
     beforeEach(async () => {
         const rsa = { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' };
@@ -126,66 +126,112 @@ describe('Cloudflare Access identity', () => {
     it('identifies the Access user and provisions them as an admin of the workspace', async () => {
         const r = await me({ 'Cf-Access-Jwt-Assertion': await jwt(claims()) });
         expect(r.status).toBe(200);
-        expect(await r.json()).toMatchObject({ email: 'evan@raleighdigital.com', role: 'admin', auth: 'access', org_id: 'demo-org' });
+        expect(await r.json()).toMatchObject({ email: 'owner@agency.example', role: 'admin', auth: 'access', org_id: 'demo-org' });
         const cookie = await me({ Cookie: 'CF_Authorization=' + await jwt(claims()) });
         expect(cookie.status).toBe(200);
-        expect(sqlite.prepare("SELECT COUNT(*) n FROM member WHERE email='evan@raleighdigital.com'").get()).toEqual({ n: 1 });
+        expect(sqlite.prepare("SELECT COUNT(*) n FROM member WHERE email='owner@agency.example'").get()).toEqual({ n: 1 });
     });
 
     it('rejects forged, expired, misaddressed and missing tokens, with no loopback bypass', async () => {
         for (const token of [await jwt(claims(), otherKey), await jwt(claims({ aud: ['other-app'] })), await jwt(claims({ iss: 'https://evil.cloudflareaccess.com' })), await jwt(claims({ exp: Math.floor(Date.now() / 1000) - 120 })), await jwt(claims({ email: undefined })), 'not.a.jwt', 'garbage'])
             expect((await me({ 'Cf-Access-Jwt-Assertion': token })).status).toBe(401);
-        expect((await me({ 'Cf-Access-Authenticated-User-Email': 'evan@raleighdigital.com' })).status).toBe(401);
+        expect((await me({ 'Cf-Access-Authenticated-User-Email': 'owner@agency.example' })).status).toBe(401);
         expect((await me({}, 'http://localhost:8787/v1/me')).status).toBe(401);
         // Agent tokens keep working when Access is configured.
         expect((await request('/v1/sites')).status).toBe(200);
     });
 });
 
+describe('first run without Cloudflare Access', () => {
+    const page = (path: string, init: RequestInit = {}) => app.request('https://notebook.example' + path, init, env);
+    const seedData = ['Cedar', 'cedar.example', 'demo-agent-token', 'demo-read-only-report', 'Fixture'];
+
+    it('serves a static setup page to browsers instead of the notebook, reading nothing', async () => {
+        const prepare = vi.spyOn(env.DB, 'prepare');
+        const assets = vi.spyOn(env.ASSETS, 'fetch');
+        for (const path of ['/', '/index.html', '/app.js', '/reports/demo-read-only-report']) {
+            const r = await page(path);
+            expect(r.status).toBe(503);
+            expect(r.headers.get('Content-Type')).toContain('text/html');
+            expect(r.headers.get('Content-Security-Policy')).toContain("default-src 'none'");
+            const html = await r.text();
+            expect(html).toContain('protect this notebook with Cloudflare Access');
+            expect(html).toContain('<code>notebook.example</code>');
+            expect(html).toContain('ACCESS_TEAM_DOMAIN');
+            for (const s of seedData)
+                expect(html).not.toContain(s);
+        }
+        expect(prepare).not.toHaveBeenCalled();
+        expect(assets).not.toHaveBeenCalled();
+    });
+
+    it('keeps API paths locked and loopback in local mode', async () => {
+        const sites = await page('/v1/sites', { headers: { Cookie: 'CF_Authorization=x' } });
+        expect(sites.status).toBe(401);
+        const text = await sites.text();
+        expect(text).toContain('not configured');
+        for (const s of seedData)
+            expect(text).not.toContain(s);
+        expect((await page('/v1/sites', { method: 'POST' })).status).toBe(401);
+        expect((await page('/mcp', { method: 'POST' })).status).toBe(401);
+        expect((await page('/health')).status).toBe(200);
+        expect(await (await app.request('http://localhost:8787/', {}, env)).text()).toBe('assets');
+    });
+
+    it('serves the notebook once Access is configured', async () => {
+        env.ACCESS_TEAM_DOMAIN = 'team.cloudflareaccess.com';
+        env.ACCESS_AUD = 'aud';
+        const r = await page('/');
+        expect(r.status).toBe(200);
+        expect(await r.text()).toBe('assets');
+        expect(r.headers.get('Content-Security-Policy')).toContain("script-src 'self'");
+    });
+});
+
 describe('agent-first change logging', () => {
     const today = new Date().toISOString().slice(0, 10);
-    const base = { summary: 'Rewrote the bikini wax title', rationale: 'Match the dominant query wording' };
+    const base = { summary: 'Rewrote the brow wax title', rationale: 'Match the dominant query wording' };
     const siteOf = (domain: string, org = 'demo-org') => sqlite.prepare('SELECT * FROM client WHERE domain=? AND org_id=?').get(domain, org) as { id: string } | undefined;
 
     it('creates the site and page from a URL and stores old to new values', async () => {
-        const r = await request('/v1/changes', 'POST', { ...base, url: 'https://www.UnikeWax.com/bikini-wax/?utm_source=x', diff: [{ field: 'title', before: 'Bikini Wax', after: 'Bikini Wax in Raleigh | Unike' }, { field: 'meta_description', before: null, after: 'Book a bikini wax.' }] });
+        const r = await request('/v1/changes', 'POST', { ...base, url: 'https://www.BrightWax.example/brow-wax/?utm_source=x', diff: [{ field: 'title', before: 'Brow Wax', after: 'Brow Wax in Springfield | Bright' }, { field: 'meta_description', before: null, after: 'Book a brow wax.' }] });
         expect(r.status).toBe(201);
         const c = await r.json() as { client_id: string; page_ids: string[]; type: string; occurred_at: string; status: string; diff: { field: string; before: string | null }[]; author_name: string };
         expect(c).toMatchObject({ type: 'title_meta', occurred_at: today, status: 'shipped', author_name: 'Cedar Assistant' });
-        expect(c.diff).toEqual([{ field: 'title', before: 'Bikini Wax', after: 'Bikini Wax in Raleigh | Unike' }, { field: 'meta_description', before: null, after: 'Book a bikini wax.' }]);
-        expect(c.client_id).toBe(siteOf('unikewax.com')!.id);
-        expect(sqlite.prepare('SELECT url FROM page WHERE id=?').get(c.page_ids[0])).toEqual({ url: 'https://www.unikewax.com/bikini-wax/' });
-        const again = await (await request('/v1/changes', 'POST', { ...base, url: 'https://www.unikewax.com/bikini-wax/', diff: [{ field: 'content', before: 'a', after: 'b' }] })).json() as { client_id: string; page_ids: string[]; type: string };
+        expect(c.diff).toEqual([{ field: 'title', before: 'Brow Wax', after: 'Brow Wax in Springfield | Bright' }, { field: 'meta_description', before: null, after: 'Book a brow wax.' }]);
+        expect(c.client_id).toBe(siteOf('brightwax.example')!.id);
+        expect(sqlite.prepare('SELECT url FROM page WHERE id=?').get(c.page_ids[0])).toEqual({ url: 'https://www.brightwax.example/brow-wax/' });
+        const again = await (await request('/v1/changes', 'POST', { ...base, url: 'https://www.brightwax.example/brow-wax/', diff: [{ field: 'content', before: 'a', after: 'b' }] })).json() as { client_id: string; page_ids: string[]; type: string };
         expect(again).toMatchObject({ client_id: c.client_id, page_ids: c.page_ids, type: 'content' });
         const sites = await (await request('/v1/sites')).json() as { domain: string; changes: number; pages: number; last_change_at: string }[];
-        expect(sites.find(x => x.domain === 'unikewax.com')).toMatchObject({ changes: 2, pages: 1, last_change_at: today });
-        expect(await (await request('/v1/changes?site=www.unikewax.com')).json()).toHaveLength(2);
+        expect(sites.find(x => x.domain === 'brightwax.example')).toMatchObject({ changes: 2, pages: 1, last_change_at: today });
+        expect(await (await request('/v1/changes?site=www.brightwax.example')).json()).toHaveLength(2);
     });
 
     it('validates targets: one site per change, matching client, real URLs, a scope', async () => {
         const bad = [
             { ...base, urls: ['https://a.example/x', 'https://b.example/y'] },
-            { ...base, client_id: 'cedar', url: 'https://unikewax.com/' },
+            { ...base, client_id: 'cedar', url: 'https://brightwax.example/' },
             { ...base, url: 'not a url' },
-            { ...base, url: 'ftp://unikewax.com/file' },
+            { ...base, url: 'ftp://brightwax.example/file' },
             { ...base },
-            { ...base, site: 'unikewax.com' },
-            { ...base, url: 'https://unikewax.com/', diff: [{ field: 'sidebar', after: 'x' }] },
+            { ...base, site: 'brightwax.example' },
+            { ...base, url: 'https://brightwax.example/', diff: [{ field: 'sidebar', after: 'x' }] },
         ];
         for (const body of bad)
             expect((await request('/v1/changes', 'POST', body)).status, JSON.stringify(body)).toBe(400);
-        const sitewide = await request('/v1/changes', 'POST', { ...base, site: 'https://unikewax.com', sitewide: true, type: 'template', occurred_at: '2026-10-01' });
+        const sitewide = await request('/v1/changes', 'POST', { ...base, site: 'https://brightwax.example', sitewide: true, type: 'template', occurred_at: '2026-10-01' });
         expect(sitewide.status).toBe(201);
         expect(await sitewide.json()).toMatchObject({ sitewide: 1, page_ids: [], occurred_at: '2026-10-01' });
     });
 
     it('keeps auto-created sites inside each workspace', async () => {
         sqlite.exec("INSERT INTO org VALUES ('other','Other','self-host'); INSERT INTO agent_token(id,org_id,name,model,token_hash,scopes) VALUES ('agent2','other','Other agent',NULL,'" + createHash('sha256').update('other-token').digest('hex') + "','[\"write:changes\",\"read:metrics\"]');");
-        await request('/v1/changes', 'POST', { ...base, url: 'https://unikewax.com/a' });
-        const other = await request('/v1/changes', 'POST', { ...base, url: 'https://unikewax.com/a' }, { Authorization: 'Bearer other-token' });
+        await request('/v1/changes', 'POST', { ...base, url: 'https://brightwax.example/a' });
+        const other = await request('/v1/changes', 'POST', { ...base, url: 'https://brightwax.example/a' }, { Authorization: 'Bearer other-token' });
         expect(other.status).toBe(201);
-        expect(siteOf('unikewax.com')!.id).not.toBe(siteOf('unikewax.com', 'other')!.id);
-        expect(await (await request('/v1/changes?site=unikewax.com')).json()).toHaveLength(1);
+        expect(siteOf('brightwax.example')!.id).not.toBe(siteOf('brightwax.example', 'other')!.id);
+        expect(await (await request('/v1/changes?site=brightwax.example')).json()).toHaveLength(1);
         expect(await (await request('/v1/sites', 'GET', undefined, { Authorization: 'Bearer other-token' })).json()).toHaveLength(1);
     });
 
@@ -196,7 +242,7 @@ describe('agent-first change logging', () => {
             return (await r.json() as { result: { isError?: boolean; content: { text: string }[] } }).result;
         };
         expect((await app.request('http://localhost:8787/mcp', { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: '{}' }, env)).status).toBe(401);
-        const args = { ...base, url: 'https://unikewax.com/bikini-wax', status: 'planned', diff: [{ field: 'h1', before: 'Waxing', after: 'Bikini waxing' }], idempotency_key: 'unike-h1' };
+        const args = { ...base, url: 'https://brightwax.example/brow-wax', status: 'planned', diff: [{ field: 'h1', before: 'Waxing', after: 'Brow waxing' }], idempotency_key: 'brightwax-h1' };
         const first = JSON.parse((await call('log_change', args)).content[0].text) as { id: string; source: string; type: string };
         const retry = JSON.parse((await call('log_change', args)).content[0].text) as { id: string };
         expect(retry.id).toBe(first.id);
@@ -205,8 +251,8 @@ describe('agent-first change logging', () => {
         expect(shipped.status).toBe('shipped');
         expect(shipped.diff).toHaveLength(1);
         const sites = JSON.parse((await call('list_sites', {})).content[0].text) as { domain: string }[];
-        expect(sites.map(s => s.domain)).toContain('unikewax.com');
-        const invalid = await call('log_change', { ...base, url: 'https://unikewax.com/', diff: [{ field: 'nope' }] });
+        expect(sites.map(s => s.domain)).toContain('brightwax.example');
+        const invalid = await call('log_change', { ...base, url: 'https://brightwax.example/', diff: [{ field: 'nope' }] });
         expect(invalid.isError).toBe(true);
         expect(invalid.content[0].text).toContain('diff');
     });
@@ -371,7 +417,7 @@ describe('redirect resolution for new pages', () => {
     const human = { Authorization: '', Origin: 'http://localhost:8787' };
     const base = { summary: 'Rewrote the home title', rationale: 'Match the brand query' };
     const pageUrl = (id: string) => sqlite.prepare('SELECT url FROM page WHERE id=?').get(id)?.url;
-    const site = (org = 'demo-org') => (sqlite.prepare("SELECT id FROM client WHERE domain='raleighdigital.com' AND org_id=?").get(org) as { id: string } | undefined)?.id;
+    const site = (org = 'demo-org') => (sqlite.prepare("SELECT id FROM client WHERE domain='agency.example' AND org_id=?").get(org) as { id: string } | undefined)?.id;
     let calls: { url: string; method: string }[];
     function web(routes: Record<string, Response | ((method: string) => Response)>) {
         calls = [];
@@ -388,19 +434,19 @@ describe('redirect resolution for new pages', () => {
     const moved = (to: string, status = 301) => new Response(null, { status, headers: { Location: to } });
 
     it('stores the URL Search Console reports and reuses that page for other variants', async () => {
-        web({ 'https://raleighdigital.com/': moved('https://www.raleighdigital.com/'), 'http://raleighdigital.com/': moved('https://raleighdigital.com/'), 'https://www.raleighdigital.com/': new Response(null) });
-        const a = await (await request('/v1/changes', 'POST', { ...base, url: 'https://raleighdigital.com/' })).json() as { page_ids: string[] };
-        expect(pageUrl(a.page_ids[0])).toBe('https://www.raleighdigital.com/');
+        web({ 'https://agency.example/': moved('https://www.agency.example/'), 'http://agency.example/': moved('https://agency.example/'), 'https://www.agency.example/': new Response(null) });
+        const a = await (await request('/v1/changes', 'POST', { ...base, url: 'https://agency.example/' })).json() as { page_ids: string[] };
+        expect(pageUrl(a.page_ids[0])).toBe('https://www.agency.example/');
         expect(calls.every(c => c.method === 'HEAD')).toBe(true);
-        const b = await (await request('/v1/changes', 'POST', { ...base, url: 'http://raleighdigital.com/' })).json() as { page_ids: string[] };
+        const b = await (await request('/v1/changes', 'POST', { ...base, url: 'http://agency.example/' })).json() as { page_ids: string[] };
         expect(b.page_ids).toEqual(a.page_ids);
         calls = [];
-        const c = await (await request('/v1/changes', 'POST', { ...base, url: 'https://www.raleighdigital.com/' })).json() as { page_ids: string[] };
+        const c = await (await request('/v1/changes', 'POST', { ...base, url: 'https://www.agency.example/' })).json() as { page_ids: string[] };
         expect(c.page_ids).toEqual(a.page_ids);
         expect(calls).toHaveLength(0); // an existing page URL needs no fetch
-        const p = await request('/v1/pages', 'POST', { client_id: site(), url: 'https://raleighdigital.com/' }, human);
+        const p = await request('/v1/pages', 'POST', { client_id: site(), url: 'https://agency.example/' }, human);
         expect(p.status).toBe(200);
-        expect(await p.json()).toMatchObject({ id: a.page_ids[0], url: 'https://www.raleighdigital.com/', existing: true });
+        expect(await p.json()).toMatchObject({ id: a.page_ids[0], url: 'https://www.agency.example/', existing: true });
         expect(sqlite.prepare('SELECT COUNT(*) n FROM page WHERE client_id=?').get(site()!)?.n).toBe(1);
     });
 
@@ -425,19 +471,19 @@ describe('redirect resolution for new pages', () => {
         expect(calls.filter(c => c.url.includes('/loop/'))).toHaveLength(5);
         for (const u of ['http://127.0.0.1/', 'http://10.0.0.1/', 'http://[::1]/', 'http://192.168.1.1/', 'http://2130706433/', 'https://intranet/', 'https://x.internal/', 'https://example.com:8443/', 'ftp://example.com/'])
             expect(isPublicURL(new URL(u)), u).toBe(false);
-        expect(isPublicURL(new URL('https://www.raleighdigital.com/'))).toBe(true);
+        expect(isPublicURL(new URL('https://www.agency.example/'))).toBe(true);
     });
 
     it('keeps other workspaces out: foreign sites 404 and their pages are never reused', async () => {
-        sqlite.exec("INSERT INTO org VALUES ('other','Other','self-host'); INSERT INTO client(id,org_id,name,timezone,domain) VALUES ('other-rd','other','RD','UTC','raleighdigital.com'); INSERT INTO page(id,client_id,url,canonical,tags) VALUES ('other-home','other-rd','https://www.raleighdigital.com/',NULL,'[]');");
-        web({ 'https://raleighdigital.com/': moved('https://www.raleighdigital.com/'), 'https://www.raleighdigital.com/': new Response(null) });
-        const foreign = await request('/v1/pages', 'POST', { client_id: 'other-rd', url: 'https://raleighdigital.com/' }, human);
+        sqlite.exec("INSERT INTO org VALUES ('other','Other','self-host'); INSERT INTO client(id,org_id,name,timezone,domain) VALUES ('other-agency','other','Agency','UTC','agency.example'); INSERT INTO page(id,client_id,url,canonical,tags) VALUES ('other-home','other-agency','https://www.agency.example/',NULL,'[]');");
+        web({ 'https://agency.example/': moved('https://www.agency.example/'), 'https://www.agency.example/': new Response(null) });
+        const foreign = await request('/v1/pages', 'POST', { client_id: 'other-agency', url: 'https://agency.example/' }, human);
         expect(foreign.status).toBe(404);
         expect(calls).toHaveLength(0);
-        const r = await (await request('/v1/changes', 'POST', { ...base, url: 'https://raleighdigital.com/' })).json() as { client_id: string; page_ids: string[] };
+        const r = await (await request('/v1/changes', 'POST', { ...base, url: 'https://agency.example/' })).json() as { client_id: string; page_ids: string[] };
         expect(r.client_id).toBe(site());
-        expect(r.client_id).not.toBe('other-rd');
+        expect(r.client_id).not.toBe('other-agency');
         expect(r.page_ids).not.toContain('other-home');
-        expect(pageUrl(r.page_ids[0])).toBe('https://www.raleighdigital.com/');
+        expect(pageUrl(r.page_ids[0])).toBe('https://www.agency.example/');
     });
 });

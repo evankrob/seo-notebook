@@ -1,0 +1,45 @@
+# Your own production config. Copy to wrangler.production.toml (gitignored), fill in the values, then:
+#   npx wrangler d1 migrations apply DB -c wrangler.production.toml --remote
+#   npx wrangler deploy -c wrangler.production.toml
+#   npx wrangler secret put GOOGLE_SERVICE_ACCOUNT -c wrangler.production.toml < service-account.json   (optional)
+name = "seo-notebook"
+main = "apps/api/src/index.ts"
+compatibility_date = "2025-10-14"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+# Preview URLs (<version>-seo-notebook.*.workers.dev) are not covered by the Access app.
+preview_urls = false
+
+[assets]
+directory = "./apps/web"
+binding = "ASSETS"
+run_worker_first = true
+
+[vars]
+CONNECTOR_MODE = "mock"
+# Cloudflare Access identifies humans. AUD = the Access application's "Application Audience (AUD) Tag".
+# Agents reach /mcp through a separate Access application for that path with a Bypass policy.
+ACCESS_TEAM_DOMAIN = "yourteam.cloudflareaccess.com"
+ACCESS_AUD = "your-access-application-aud-tag"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "seo-notebook"
+database_id = "your-d1-database-id"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "UPLOADS"
+bucket_name = "seo-notebook-uploads"
+
+[[queues.producers]]
+binding = "JOBS"
+queue = "seo-notebook-jobs"
+
+[[queues.consumers]]
+queue = "seo-notebook-jobs"
+max_batch_size = 10
+max_retries = 3
+
+[triggers]
+crons = ["0 7 * * *"]

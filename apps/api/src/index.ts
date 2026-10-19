@@ -4,7 +4,8 @@ import { drizzle } from 'drizzle-orm/d1';
 import { eq } from 'drizzle-orm';
 import { clients } from './schema';
 import type { Actor, Bindings, Env, Job } from './types';
-import { accessConfigured, authenticate, hash } from './auth';
+import { accessConfigured, authenticate, hash, isLoopback } from './auth';
+import { SETUP_CSP, setupPage } from './setup';
 import { HttpError, client, date, day, getImpact, impactCache, listSites, siteDomain, listChanges, logChange, normalizeURL, pageURL, scope, updateChange } from './service';
 import { backfillPage, fanout, processJob } from './jobs';
 import { discover, parseServiceAccount } from '../../../packages/connectors/google';
@@ -19,13 +20,24 @@ const body = async (c: Context<Bindings>): Promise<unknown> => {
         throw new HttpError(400, 'Request body must be valid JSON');
     }
 };
-app.use('*', async (c, next) => { await next(); c.header('X-Content-Type-Options', 'nosniff'); c.header('Referrer-Policy', 'no-referrer'); c.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'"); c.header('Cache-Control', 'no-store'); });
+app.use('*', async (c, next) => { await next(); c.header('X-Content-Type-Options', 'nosniff'); c.header('Referrer-Policy', 'no-referrer'); c.header('Content-Security-Policy', c.res.headers.get('Content-Security-Policy') ?? "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'"); c.header('Cache-Control', 'no-store'); });
 app.onError((e, c) => c.json({ error: e instanceof ZodError ? e.issues.map(i => i.path.join('.') + ': ' + i.message).join('; ') : e instanceof HttpError ? e.message : 'Internal server error' }, e instanceof HttpError ? e.status as 400 : e instanceof ZodError ? 400 : 500));
+// A deployed notebook without Access configured lets no one in. Browsers get setup steps instead of a bare 401;
+// the page is static and reads nothing. API paths keep their own auth errors.
+app.use('*', async (c, next) => {
+    const path = new URL(c.req.url).pathname;
+    const api = path === '/health' || path === '/mcp' || path.startsWith('/v1/') || path.startsWith('/public/');
+    if (accessConfigured(c.env) || isLoopback(c.req.raw) || api || !['GET', 'HEAD'].includes(c.req.method))
+        return next();
+    return c.html(setupPage(new URL(c.req.url).host), 503, { 'Content-Security-Policy': SETUP_CSP });
+});
 app.get('/health', c => c.json({ ok: true, mode: c.env.CONNECTOR_MODE, google: !!parseServiceAccount(c.env.GOOGLE_SERVICE_ACCOUNT) }));
 app.use('/v1/*', async (c, next) => {
     const actor = await authenticate(c.req.raw, c.env);
     if (!actor)
-        throw new HttpError(401, accessConfigured(c.env) ? 'Sign in through Cloudflare Access' : 'Authentication required');
+        throw new HttpError(401, accessConfigured(c.env)
+            ? 'Sign in through Cloudflare Access'
+            : isLoopback(c.req.raw) ? 'Authentication required' : 'Cloudflare Access is not configured yet; open the notebook in a browser for setup steps');
     // Browser identity rides on the Access cookie, so cross-site writes must be refused.
     if (actor.kind === 'human' && !['GET', 'HEAD'].includes(c.req.method) && c.req.header('Origin') !== new URL(c.req.url).origin)
         throw new HttpError(403, 'Origin mismatch');

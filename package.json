@@ -9,6 +9,7 @@
     "db:migrate": "wrangler d1 migrations apply DB --local",
     "db:seed": "wrangler d1 execute DB --local --file=fixtures/seed.sql",
     "setup": "npm run db:migrate && npm run db:seed",
+    "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "check": "npm run typecheck && npm run lint && npm test",
@@ -33,5 +34,18 @@
   },
   "engines": {
     "node": ">=22.14.0"
+  },
+  "cloudflare": {
+    "bindings": {
+      "ACCESS_TEAM_DOMAIN": {
+        "description": "Your Cloudflare Access team domain, e.g. `yourteam.cloudflareaccess.com` (Zero Trust → Settings → Custom Pages). Leave empty for now: the notebook shows a setup page until Access is configured. See the [README](https://github.com/evankrob/seo-notebook#after-you-deploy)."
+      },
+      "ACCESS_AUD": {
+        "description": "The **Application Audience (AUD) Tag** of the Access application that protects this Worker (Zero Trust → Access → Applications → your app). Leave empty until you have created it."
+      },
+      "GOOGLE_SERVICE_ACCOUNT": {
+        "description": "Optional secret: a Google service-account JSON key with read access to your Search Console and GA4 properties. Add it later with `npx wrangler secret put GOOGLE_SERVICE_ACCOUNT < service-account.json`. See [Connect Google data](https://github.com/evankrob/seo-notebook#connect-google-data)."
+      }
+    }
   }
 }

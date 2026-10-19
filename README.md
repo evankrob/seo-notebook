@@ -1,5 +1,7 @@
 # SEO Notebook
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/evankrob/seo-notebook)
+
 A self-hosted change log that your AI agents write to. When an agent edits a page (a title, a meta description, an H1, a block of content), it records what changed, the old and new values, and why. The notebook then lines those changes up against Google Search Console and Google Analytics so you can see the before and after.
 
 - **Agent-first.** Agents connect over MCP and log changes by URL. Sites and pages are created automatically from the domain; nobody sets anything up by hand. Manual logging in the UI is still there.
@@ -14,10 +16,11 @@ Requires **Node 22.14+**. Everything runs inside Wrangler with local D1, R2 and 
 
 ```sh
 npm ci
-cp .env.example .dev.vars
 npm run setup      # local migrations + fictional demo data
 npm run dev        # http://localhost:8787
 ```
+
+Optional local settings (your own `LOCAL_USER_EMAIL`, a Google key) go in `.dev.vars`; start from `cp .dev.vars.example .dev.vars`.
 
 Locally there is no login: requests to `localhost` act as `LOCAL_USER_EMAIL` (default `owner@localhost`). This only applies when Cloudflare Access is not configured and the request host is a loopback address. The demo data belongs to a fictional store, **Cedar & Finch Supply** at `cedar.example`, and includes a demo agent token, `demo-agent-token-not-a-secret`. Never load the demo data into a deployed notebook.
 
@@ -28,17 +31,39 @@ node scripts/stress.mjs   # load/robustness run against npm run dev
 
 ## Deploy to your Cloudflare
 
-1. Create the resources and put their IDs in `[env.production]` in `wrangler.toml`: a D1 database, an R2 bucket and a Queue.
-2. Apply migrations and deploy:
-   ```sh
-   npx wrangler d1 migrations apply DB --env production --remote
-   npx wrangler deploy --env production
-   ```
-3. **Protect the UI with Cloudflare Access.** In Zero Trust → Access → Applications, add a self-hosted application for the Worker's hostname with an Allow policy listing the people who may use the notebook. Everyone it lets in is a notebook admin.
-4. **Let agents through to `/mcp`.** Add a second Access application for the same hostname with path `mcp` and a **Bypass** policy. Agent bearer tokens protect that path.
-5. Set `ACCESS_TEAM_DOMAIN` (e.g. `yourteam.cloudflareaccess.com`) and `ACCESS_AUD` (the UI application's *Application Audience (AUD) Tag*) in `[env.production.vars]`, then deploy again. The Worker verifies the Access JWT on every request; with these unset, a deployed notebook refuses all browser requests.
+**One click:** the **Deploy to Cloudflare** button above copies this repository into your GitHub account, creates the D1 database, R2 bucket and Queue, applies the migrations and deploys the Worker. Leave `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` empty when it asks; you fill them in after the first deploy.
+
+**From a clone:** `npx wrangler login`, then:
+
+```sh
+npx wrangler deploy   # first time: creates the D1 database, R2 bucket and Queue
+npm run deploy        # applies migrations, then deploys; use this from now on
+```
+
+`wrangler.toml` holds working defaults (Worker `seo-notebook`, D1 `seo-notebook`, R2 `seo-notebook-uploads`, Queue `seo-notebook-jobs`) with no resource IDs; Wrangler finds or creates the resources by name.
+
+### After you deploy
+
+Until Cloudflare Access is configured, the notebook shows a setup page and nothing else: no data and no API access.
+
+1. **Protect the UI with Cloudflare Access.** In Zero Trust → Access → Applications, add a self-hosted application for the Worker's hostname (e.g. `seo-notebook.<you>.workers.dev`) with an Allow policy listing the people who may use the notebook. Everyone it lets in is a notebook admin.
+2. **Let agents through to `/mcp`.** Add a second Access application for the same hostname with path `mcp` and a **Bypass** policy. Agent bearer tokens protect that path.
+3. **Tell the Worker about Access.** Set `ACCESS_TEAM_DOMAIN` (e.g. `yourteam.cloudflareaccess.com`) and `ACCESS_AUD` (the first application's *Application Audience (AUD) Tag*) under `[vars]` in your repository's `wrangler.toml`, then deploy again (a push redeploys a button deploy). Set them in the file rather than the dashboard: each deploy replaces dashboard variables with the file's. The Worker verifies the Access JWT on every request.
+4. **Optional: Google data.** Add the `GOOGLE_SERVICE_ACCOUNT` secret; see [Connect Google data](#connect-google-data).
 
 `preview_urls = false` is set because preview URLs are not covered by Access.
+
+### Keeping your production settings out of git
+
+If you deploy from a clone of this public repository rather than your own copy, keep your account's values in a gitignored file instead of editing `wrangler.toml`:
+
+```sh
+cp wrangler.production.toml.example wrangler.production.toml   # fill in Access values and the D1 database ID
+npx wrangler d1 migrations apply DB -c wrangler.production.toml --remote
+npx wrangler deploy -c wrangler.production.toml
+```
+
+Pass `-c wrangler.production.toml` to `wrangler secret put` and `wrangler tail` too.
 
 ## Connect Google data
 
@@ -47,7 +72,7 @@ The notebook reads Search Console and GA4 with a Google **service account**. Its
 1. In the service account's Google Cloud project, enable the **Google Search Console API**, the **Google Analytics Data API** and, for the property pick list, the **Google Analytics Admin API**.
 2. Store the key:
    ```sh
-   npx wrangler secret put GOOGLE_SERVICE_ACCOUNT --env production < service-account.json
+   npx wrangler secret put GOOGLE_SERVICE_ACCOUNT < service-account.json
    ```
    Locally, put it in `.dev.vars` on one line: `GOOGLE_SERVICE_ACCOUNT='<output of jq -c . service-account.json>'`.
 3. Give the service account's email read access: in Search Console, *Settings → Users and permissions* (Restricted is enough); in GA4, *Admin → Property access management* (Viewer).
@@ -57,7 +82,7 @@ Connecting pulls 16 months of history for the site's pages. After that a daily c
 
 ## Connect an agent
 
-Open the notebook, choose **Agents → Connect an agent**, and name it (e.g. "Claude Code · unikewax repo"). You get a one-time token and ready-made config:
+Open the notebook, choose **Agents → Connect an agent**, and name it (e.g. "Claude Code · brightwax-site repo"). You get a one-time token and ready-made config:
 
 ```sh
 claude mcp add --transport http seo-notebook https://<your-notebook>/mcp \
@@ -74,15 +99,15 @@ Then add one line to the agent's project rules (`CLAUDE.md`, `AGENTS.md`, `.curs
 
 ```json
 {
-  "url": "https://www.unikewax.com/bikini-wax/",
+  "url": "https://www.brightwax.example/brow-wax/",
   "summary": "Rewrote the title and meta description",
   "rationale": "Match the dominant query wording from Search Console",
   "diff": [
-    { "field": "title", "before": "Bikini Wax", "after": "Bikini Wax in Raleigh | Unike Wax" },
-    { "field": "meta_description", "before": null, "after": "Book a bikini wax in Raleigh." }
+    { "field": "title", "before": "Brow Wax", "after": "Brow Wax in Springfield | Bright Wax" },
+    { "field": "meta_description", "before": null, "after": "Book a brow wax in Springfield." }
   ],
-  "evidence": ["https://github.com/acme/unikewax/pull/42"],
-  "idempotency_key": "unikewax-bikini-wax-title-2026-10-19"
+  "evidence": ["https://github.com/acme/brightwax-site/pull/42"],
+  "idempotency_key": "brightwax-brow-wax-title-2026-10-19"
 }
 ```
 
@@ -162,4 +187,7 @@ One D1 database per notebook. A notebook holds many sites, and every query is sc
 1. **Sign in with Google (OAuth)** as an alternative to the service account.
 2. **Automatic page snapshots** when a change is logged (title, meta, headings, text hash), so there is a record even when an agent sends little.
 3. **PR and commit links** as structured fields rather than plain evidence URLs.
-4. A **Deploy to Cloudflare** button.
+
+## Contributing and security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md). Released under the [MIT License](LICENSE).
