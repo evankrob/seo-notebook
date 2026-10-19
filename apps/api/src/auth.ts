@@ -3,6 +3,7 @@ import type { Actor, Env } from './types';
 export const hash = async (s: string) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)))).map(b => b.toString(16).padStart(2, '0')).join('');
 
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
+export const isLoopback = (req: Request) => LOOPBACK.has(new URL(req.url).hostname);
 export const accessConfigured = (env: Env) => !!(env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD);
 const teamDomain = (env: Env) => env.ACCESS_TEAM_DOMAIN!.replace(/^https?:\/\//, '').replace(/\/+$/, '');
 
@@ -62,7 +63,7 @@ async function humanEmail(req: Request, env: Env): Promise<string | null> {
         const token = req.headers.get('Cf-Access-Jwt-Assertion') ?? req.headers.get('Cookie')?.match(/(?:^|;\s*)CF_Authorization=([^;]+)/)?.[1];
         return token ? verifyAccessJwt(token, env) : null;
     }
-    return LOOPBACK.has(new URL(req.url).hostname) ? (env.LOCAL_USER_EMAIL || 'owner@localhost').toLowerCase() : null;
+    return isLoopback(req) ? (env.LOCAL_USER_EMAIL || 'owner@localhost').toLowerCase() : null;
 }
 
 interface MemberRow {

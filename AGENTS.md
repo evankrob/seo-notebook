@@ -29,4 +29,4 @@ Self-hosted Cloudflare Worker (Hono + D1 + Queues + R2): AI agents log SEO chang
 ## Don'ts
 - No new `any` (lint warns; prefer typed row interfaces). No `@ts-ignore`.
 - Don't add more 200+ char one-liners; format new code normally.
-- Never commit `.dev.vars`, `.env*`, tokens, or `*.bundle`. Don't deploy or create Cloudflare resources.
+- Never commit `.dev.vars`, `.env*`, `wrangler.production.toml`, tokens, or `*.bundle`. Don't deploy or create Cloudflare resources.

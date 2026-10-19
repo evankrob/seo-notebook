@@ -10,7 +10,9 @@ seo-notebook-history.bundle
 dist/
 build/
 .env.*
-!.env.example
 *.db
 *.sqlite
 *.sqlite3
+
+# personal production config (see wrangler.production.toml.example)
+wrangler.production.toml

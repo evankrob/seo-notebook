@@ -766,7 +766,7 @@ async function connectGoogle(site) {
         const box = sheet('Connect Google data', `<p>This notebook reads Search Console and GA4 with a Google service account. Its JSON key is stored as a Worker secret, never in the database.</p>
             <ol class="steps">
                 <li>In Google Cloud, enable the <strong>Search Console API</strong>, <strong>Google Analytics Data API</strong> and (for the pick list) <strong>Google Analytics Admin API</strong>.</li>
-                <li>Store the key as a secret, then reload this page:<pre>npx wrangler secret put GOOGLE_SERVICE_ACCOUNT --env production &lt; service-account.json</pre>
+                <li>Store the key as a secret, then reload this page:<pre>npx wrangler secret put GOOGLE_SERVICE_ACCOUNT &lt; service-account.json</pre>
                 Running locally? Add it to <code>.dev.vars</code> as one line: <code>GOOGLE_SERVICE_ACCOUNT='…'</code> (<code>jq -c . service-account.json</code> prints it).</li>
             </ol>${connected}`);
         bindRemove(box);
@@ -894,7 +894,7 @@ function newAgent() {
         if (state.sites.length)
             await refresh();
     }, 'Create token');
-    box.querySelector('[name=name]').placeholder = 'e.g. Claude Code · unikewax repo';
+    box.querySelector('[name=name]').placeholder = 'e.g. Claude Code · brightwax-site repo';
 }
 
 function agentSetup(name, token) {

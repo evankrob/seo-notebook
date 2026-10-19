@@ -1,0 +1,10 @@
+# Optional local overrides: cp .dev.vars.example .dev.vars (gitignored). Nothing here is required.
+# Every line is commented out on purpose: the Deploy to Cloudflare button reads this file and would
+# otherwise ask for each entry as a secret.
+
+# Local mode (no Cloudflare Access): requests to localhost act as this user.
+# LOCAL_USER_EMAIL=owner@localhost
+
+# Optional: live Search Console/GA4. One-line JSON key (jq -c . service-account.json).
+# Deployed notebooks use a secret instead: npx wrangler secret put GOOGLE_SERVICE_ACCOUNT < service-account.json
+# GOOGLE_SERVICE_ACCOUNT='{"type":"service_account",...}'

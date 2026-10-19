@@ -1,7 +1,15 @@
+# Defaults for a fresh deploy (Deploy to Cloudflare button or `npm run deploy`) and for local dev.
+# Resources have no IDs here: Wrangler provisions the D1 database, R2 bucket and queue on first deploy.
+# Running your own long-lived production? Keep its IDs and Access values out of git in
+# wrangler.production.toml (see wrangler.production.toml.example) and deploy with
+#   npx wrangler deploy -c wrangler.production.toml
 name = "seo-notebook"
 main = "apps/api/src/index.ts"
 compatibility_date = "2025-10-14"
 compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+# Preview URLs (<version>-seo-notebook.*.workers.dev) are not covered by your Access application.
+preview_urls = false
 
 [assets]
 directory = "./apps/web"
@@ -10,59 +18,32 @@ run_worker_first = true
 
 [vars]
 CONNECTOR_MODE = "mock"
-# No ACCESS_* vars = local mode: loopback requests act as LOCAL_USER_EMAIL (default owner@localhost).
+# Cloudflare Access identifies humans. Both empty = local mode: only loopback requests are let in
+# (acting as LOCAL_USER_EMAIL, default owner@localhost); a deployed notebook shows a setup page.
+# ACCESS_TEAM_DOMAIN: e.g. yourteam.cloudflareaccess.com
+# ACCESS_AUD: the Access application's "Application Audience (AUD) Tag"
+ACCESS_TEAM_DOMAIN = ""
+ACCESS_AUD = ""
+# Secret (not a var): GOOGLE_SERVICE_ACCOUNT, the Google service-account JSON key.
+#   npx wrangler secret put GOOGLE_SERVICE_ACCOUNT < service-account.json
 
 [[d1_databases]]
 binding = "DB"
-database_name = "seo-notebook-local"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_name = "seo-notebook"
 migrations_dir = "migrations"
 
 [[r2_buckets]]
 binding = "UPLOADS"
-bucket_name = "seo-notebook-local-uploads"
+bucket_name = "seo-notebook-uploads"
 
 [[queues.producers]]
 binding = "JOBS"
-queue = "seo-notebook-local-jobs"
+queue = "seo-notebook-jobs"
 
 [[queues.consumers]]
-queue = "seo-notebook-local-jobs"
+queue = "seo-notebook-jobs"
 max_batch_size = 10
 max_retries = 3
 
 [triggers]
-crons = ["0 7 * * *"]
-
-# Production (deployed 2026-10-16 to Evan's account, behind Cloudflare Access).
-# Deploy: npx wrangler deploy --env production
-[env.production]
-name = "seo-notebook"
-workers_dev = true
-# Preview URLs (<version>-seo-notebook.*.workers.dev) are not covered by the Access app.
-preview_urls = false
-# Secret (not a var): GOOGLE_SERVICE_ACCOUNT, the Google service-account JSON key.
-#   npx wrangler secret put GOOGLE_SERVICE_ACCOUNT --env production < service-account.json
-[env.production.vars]
-CONNECTOR_MODE = "mock"
-# Cloudflare Access identifies humans. AUD = the Access application's "Application Audience (AUD) Tag".
-# Agents reach /mcp through a separate Access application for that path with a Bypass policy.
-ACCESS_TEAM_DOMAIN = "raspy-scene-a7ef.cloudflareaccess.com"
-ACCESS_AUD = "06b8375b49d5652794e42f8d0a37fcc135a626498ba697708360a2120dd3c4a8"
-[[env.production.d1_databases]]
-binding = "DB"
-database_name = "seo-notebook"
-database_id = "9c1e41c7-9ab5-4a4e-b4af-b8aeac5a0516"
-migrations_dir = "migrations"
-[[env.production.r2_buckets]]
-binding = "UPLOADS"
-bucket_name = "seo-notebook-uploads"
-[[env.production.queues.producers]]
-binding = "JOBS"
-queue = "seo-notebook-jobs"
-[[env.production.queues.consumers]]
-queue = "seo-notebook-jobs"
-max_batch_size = 10
-max_retries = 3
-[env.production.triggers]
 crons = ["0 7 * * *"]

@@ -9,7 +9,7 @@ Call `log_change` right after the change, in the same task:
 - `url` (or `urls`): the page(s) you changed. You do not need IDs; the site and pages are created from the domain. Use `site` plus `sitewide: true` for template, robots or sitewide changes.
 - `summary`: what changed, in one line.
 - `rationale`: why. State the hypothesis ("titles that lead with the service + city should lift CTR").
-- `diff`: the old and new value of every field you edited, e.g. `{"field": "title", "before": "Bikini Wax", "after": "Bikini Wax in Raleigh | Unike Wax"}`. Fields: `title`, `meta_description`, `h1`, `headings`, `content`, `canonical`, `robots`, `schema`, `redirect`, `internal_links`, `images`, `url`, `other`. For long content, send a representative excerpt (max 5,000 characters per value).
+- `diff`: the old and new value of every field you edited, e.g. `{"field": "title", "before": "Brow Wax", "after": "Brow Wax in Springfield | Bright Wax"}`. Fields: `title`, `meta_description`, `h1`, `headings`, `content`, `canonical`, `robots`, `schema`, `redirect`, `internal_links`, `images`, `url`, `other`. For long content, send a representative excerpt (max 5,000 characters per value).
 - `evidence`: links such as the PR or commit, if there is one.
 - `idempotency_key`: a stable key for this change (e.g. `site-page-field-date`). Reuse it on retries; never reuse it for a different change.
 
