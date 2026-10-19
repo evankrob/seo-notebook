@@ -1,6 +1,6 @@
 # SEO Notebook marketing site
 
-Static [Astro](https://astro.build) site for [seonotebook.dev](https://www.seonotebook.dev), served by Cloudflare Workers static assets. Separate from the notebook Worker at the repository root.
+Static [Astro](https://astro.build) site for [seonotebook.dev](https://seonotebook.dev), served by Cloudflare Workers static assets. Separate from the notebook Worker at the repository root.
 
 ```sh
 cd site
