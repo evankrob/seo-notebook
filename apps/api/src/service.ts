@@ -54,15 +54,45 @@ export async function listChanges(env: Env, actor: Actor, q: Record<string, stri
 }
 export const normalizeURL = (s: string) => { const u = new URL(s); if (!['http:', 'https:'].includes(u.protocol) || u.username || u.password)
     throw new HttpError(400, 'Expected HTTP(S) URL'); u.hash = ''; u.search = ''; u.hostname = u.hostname.toLowerCase(); return u.toString(); };
-export async function resolvePages(env: Env, c: Change): Promise<string[]> { if (c.sitewide)
-    return (await env.DB.prepare('SELECT id FROM page WHERE client_id=?').bind(c.client_id).all<{
-        id: string;
-    }>()).results.map(p => p.id); if (c.group_id) {
-    const g = await env.DB.prepare('SELECT page_ids FROM page_group WHERE id=? AND client_id=?').bind(c.group_id, c.client_id).first<{
-        page_ids: string;
-    }>();
-    return g ? JSON.parse(g.page_ids) : [];
-} return c.page_ids; }
+// Per-request memo for computing many impacts at once (reports). Data is loaded once for
+// the [start, end] date range and filtered in memory, so query count stays constant.
+export interface ImpactCache {
+    start: string;
+    end: string;
+    memo: Map<string, Promise<unknown>>;
+}
+export const impactCache = (start: string, end: string): ImpactCache => ({ start, end, memo: new Map() });
+function remember<T>(cache: ImpactCache | undefined, key: string, load: () => Promise<T>): Promise<T> {
+    if (!cache)
+        return load();
+    let value = cache.memo.get(key) as Promise<T> | undefined;
+    if (!value) {
+        value = load();
+        cache.memo.set(key, value);
+    }
+    return value;
+}
+const covers = (cache: ImpactCache | undefined, start: string, end: string): cache is ImpactCache => !!cache && start >= cache.start && end <= cache.end;
+export async function resolvePages(env: Env, c: Change, cache?: ImpactCache): Promise<string[]> {
+    if (c.sitewide)
+        return remember(cache, 'site:' + c.client_id, async () => (await env.DB.prepare('SELECT id FROM page WHERE client_id=?').bind(c.client_id).all<{
+            id: string;
+        }>()).results.map(p => p.id));
+    if (c.group_id) {
+        if (cache) {
+            const groups = await remember(cache, 'groups:' + c.client_id, async () => new Map((await env.DB.prepare('SELECT id,page_ids FROM page_group WHERE client_id=?').bind(c.client_id).all<{
+                id: string;
+                page_ids: string;
+            }>()).results.map(g => [g.id, JSON.parse(g.page_ids) as string[]])));
+            return groups.get(c.group_id) ?? [];
+        }
+        const g = await env.DB.prepare('SELECT page_ids FROM page_group WHERE id=? AND client_id=?').bind(c.group_id, c.client_id).first<{
+            page_ids: string;
+        }>();
+        return g ? JSON.parse(g.page_ids) : [];
+    }
+    return c.page_ids;
+}
 async function validateScope(env: Env, c: z.infer<typeof changeSchema>) {
     if (Number(c.sitewide) + Number(!!c.group_id) + Number(c.page_ids.length > 0) !== 1)
         throw new HttpError(400, 'Choose exactly one scope: pages, group, or sitewide');
@@ -114,11 +144,39 @@ export async function updateChange(env: Env, actor: Actor, id: string, raw: unkn
     await env.DB.prepare('UPDATE change_entry SET occurred_at=?,timezone=?,status=?,type=?,page_ids=?,group_id=?,sitewide=?,summary=?,rationale=?,evidence=?,expected_metric=?,tags=?,updated_at=? WHERE id=?').bind(merged.occurred_at, merged.timezone, merged.status, merged.type, JSON.stringify(merged.page_ids), merged.group_id, Number(merged.sitewide), merged.summary, merged.rationale, JSON.stringify(merged.evidence), merged.expected_metric, JSON.stringify(merged.tags), new Date().toISOString(), id).run();
     return getChange(env, actor, id);
 }
-export async function getImpact(env: Env, actor: Actor, id: string, q: Record<string, string | undefined> = {}) {
+interface MetricRow {
+    page_id: string;
+    date: string;
+    value: number;
+    data_state: 'final' | 'fresh';
+    weight?: number;
+}
+async function metricRows(env: Env, property: string, metric: string, start: string, end: string, cache?: ImpactCache): Promise<MetricRow[]> {
+    const load = async (s: string, e: string) => {
+        const rows = (await env.DB.prepare('SELECT page_id,date,value,data_state FROM metric_series WHERE property_id=? AND date>=? AND date<=? AND metric=?').bind(property, s, e, metric).all<MetricRow>()).results;
+        if (['ctr', 'position'].includes(metric)) {
+            const weights = (await env.DB.prepare("SELECT page_id,date,value FROM metric_series WHERE property_id=? AND date>=? AND date<=? AND metric='impressions' AND data_state='final'").bind(property, s, e).all<MetricRow>()).results;
+            const index = new Map(weights.map(r => [r.page_id + '|' + r.date, r.value]));
+            for (const row of rows)
+                row.weight = index.get(row.page_id + '|' + row.date);
+        }
+        return rows;
+    };
+    if (!covers(cache, start, end))
+        return load(start, end);
+    const all = await remember(cache, `rows:${property}:${metric}`, () => load(cache.start, cache.end));
+    return all.filter(r => r.date >= start && r.date <= end);
+}
+export async function getImpact(env: Env, actor: Actor, id: string, q: Record<string, string | undefined> = {}, opts: {
+    cache?: ImpactCache;
+    change?: Change;
+} = {}) {
     scope(actor, 'read:metrics');
-    const c = await getChange(env, actor, id), days = z.coerce.number().int().min(7).max(180).parse(q.days ?? 28), lag = z.coerce.number().int().min(0).max(60).parse(q.lag ?? 3);
+    const { cache } = opts;
+    // A preloaded change must already have been read through an org-scoped query.
+    const c = opts.change ?? await getChange(env, actor, id), days = z.coerce.number().int().min(7).max(180).parse(q.days ?? 28), lag = z.coerce.number().int().min(0).max(60).parse(q.lag ?? 3);
     const w = windows(c.occurred_at, days, lag);
-    let pages = await resolvePages(env, c);
+    const pages = await resolvePages(env, c, cache);
     let control: string[] = [];
     if (q.control) {
         const g = await env.DB.prepare('SELECT page_ids FROM page_group WHERE id=? AND client_id=?').bind(q.control, c.client_id).first<{
@@ -136,29 +194,38 @@ export async function getImpact(env: Env, actor: Actor, id: string, q: Record<st
         if (!await env.DB.prepare('SELECT id FROM property WHERE id=? AND client_id=?').bind(property, c.client_id).first())
             throw new HttpError(400, 'Property outside client');
     }
-    else
-        property = (await env.DB.prepare('SELECT id FROM property WHERE client_id=? AND type IN (?,?) ORDER BY id LIMIT 1').bind(c.client_id, ['sessions', 'key_events', 'revenue'].includes(metric) ? 'ga4' : metric === 'custom' ? 'custom' : 'gsc_domain', ['sessions', 'key_events', 'revenue'].includes(metric) ? 'ga4' : metric === 'custom' ? 'custom' : 'gsc_url_prefix').first<{
+    else {
+        const [a, b] = ['sessions', 'key_events', 'revenue'].includes(metric) ? ['ga4', 'ga4'] : metric === 'custom' ? ['custom', 'custom'] : ['gsc_domain', 'gsc_url_prefix'];
+        property = await remember(cache, `property:${c.client_id}:${a}`, async () => (await env.DB.prepare('SELECT id FROM property WHERE client_id=? AND type IN (?,?) ORDER BY id LIMIT 1').bind(c.client_id, a, b).first<{
             id: string;
-        }>())?.id;
-    const rows = property ? (await env.DB.prepare('SELECT page_id,date,value,data_state FROM metric_series WHERE property_id=? AND date>=? AND date<=? AND metric=?').bind(property, w.pre.start, w.post.end, metric).all<any>()).results : [];
-    if (property && ['ctr', 'position'].includes(metric)) {
-        const weights = (await env.DB.prepare("SELECT page_id,date,value FROM metric_series WHERE property_id=? AND date>=? AND date<=? AND metric='impressions' AND data_state='final'").bind(property, w.pre.start, w.post.end).all<any>()).results;
-        const index = new Map(weights.map(r => [r.page_id + '|' + r.date, r.value]));
-        for (const row of rows)
-            row.weight = index.get(row.page_id + '|' + row.date);
+        }>())?.id);
     }
-    const others = await listChanges(env, actor, { client: c.client_id, since: w.pre.start, until: w.post.end });
+    const relevant = new Set([...pages, ...control]);
+    const rows = property ? (await metricRows(env, property, metric, w.pre.start, w.post.end, cache)).filter(r => relevant.has(r.page_id)) : [];
+    const others = covers(cache, w.pre.start, w.post.end)
+        ? (await remember(cache, 'changes:' + c.client_id, () => listChanges(env, actor, { client: c.client_id, since: cache.start, until: cache.end }))).filter(o => o.occurred_at >= w.pre.start && o.occurred_at <= w.post.end)
+        : await listChanges(env, actor, { client: c.client_id, since: w.pre.start, until: w.post.end });
     const overlaps: string[] = [];
     for (const o of others) {
-        if (o.id !== id && o.status !== 'planned' && (await resolvePages(env, o)).some(p => pages.includes(p)))
+        if (o.id !== c.id && o.status !== 'planned' && (await resolvePages(env, o, cache)).some(p => pages.includes(p)))
             overlaps.push(o.id);
     }
     if (control.some(id => pages.includes(id))) throw new HttpError(400, 'Control must exclude changed pages');
     const result = impact({ date: c.occurred_at, points: rows, pages, control, days, lag, overlaps, status: c.status, newPage: c.type === 'new_page', metric });
     if (metric === 'ctr' || metric === 'position')
         result.warnings.push('Impression-weighted mean. For position a lower value is better. Confidence thresholds are calibrated only for volume metrics.');
-    const dates = [...new Set(rows.filter(r => pages.includes(r.page_id)).map(r => r.date))].sort();
-    const series = dates.map(date => { const points = rows.filter(r => r.date === date && pages.includes(r.page_id)); const weighted = ['ctr', 'position'].includes(metric); const totalWeight = points.reduce((sum, p) => sum + (p.weight ?? 0), 0); return { date, value: weighted ? (totalWeight ? points.reduce((sum, p) => sum + p.value * (p.weight ?? 0), 0) / totalWeight : 0) : points.reduce((sum, p) => sum + p.value, 0), data_state: points.every(p => p.data_state === 'final') ? 'final' : 'fresh' }; });
+    const weighted = ['ctr', 'position'].includes(metric);
+    const byDate = new Map<string, MetricRow[]>();
+    for (const r of rows) {
+        if (pages.includes(r.page_id))
+            byDate.set(r.date, [...(byDate.get(r.date) ?? []), r]);
+    }
+    const series = [...byDate.keys()].toSorted().map(date => {
+        const points = byDate.get(date)!;
+        const totalWeight = points.reduce((sum, p) => sum + (p.weight ?? 0), 0);
+        const value = weighted ? (totalWeight ? points.reduce((sum, p) => sum + p.value * (p.weight ?? 0), 0) / totalWeight : 0) : points.reduce((sum, p) => sum + p.value, 0);
+        return { date, value, data_state: points.every(p => p.data_state === 'final') ? 'final' : 'fresh' };
+    });
     return { change: c, metric, property_id: property, series, ...result };
 }
 export async function storeMetrics(env: Env, metrics: Metric[]) { for (let i = 0; i < metrics.length; i += 40)

@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, describe, it, expect } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { app } from '../apps/api/src/index';
 import { processJob, fanout } from '../apps/api/src/jobs';
 import type { Env, Job } from '../apps/api/src/types';
@@ -15,7 +15,7 @@ class Statement {
     async run() { return { success: true, results: [], meta: this.db.prepare(this.sql).run(...this.params) }; }
 }
 let sqlite: DatabaseSync, env: Env, jobs: Job[], objects: Map<string, string>;
-beforeEach(() => { sqlite = new DatabaseSync(':memory:'); sqlite.exec(readFileSync('migrations/0001_notebook.sql', 'utf8')); sqlite.exec(readFileSync('fixtures/seed.sql', 'utf8')); jobs = []; objects = new Map(); env = { DB: { prepare: (sql: string) => new Statement(sqlite, sql), batch: async (statements: Statement[]) => { sqlite.exec('BEGIN'); try {
+beforeEach(() => { sqlite = new DatabaseSync(':memory:'); for (const f of readdirSync('migrations').filter(f => f.endsWith('.sql')).sort()) sqlite.exec(readFileSync('migrations/' + f, 'utf8')); sqlite.exec(readFileSync('fixtures/seed.sql', 'utf8')); jobs = []; objects = new Map(); env = { DB: { prepare: (sql: string) => new Statement(sqlite, sql), batch: async (statements: Statement[]) => { sqlite.exec('BEGIN'); try {
             const rows = [];
             for (const s of statements)
                 rows.push(await s.run());
@@ -53,4 +53,77 @@ describe('workspace administration boundaries', () => {
     it('creates client entities with mock auth modes and normalized page URLs', async () => { const headers = await human(); const c = await (await request('/v1/clients', 'POST', { name: 'Fictional Moss Supply', timezone: 'UTC' }, headers)).json() as any; const p = await (await request('/v1/pages', 'POST', { client_id: c.id, url: 'https://MOSS.example/items/?tracking=1' }, headers)).json() as any; expect(sqlite.prepare('SELECT url FROM page WHERE id=?').get(p.id)?.url).toBe('https://moss.example/items/'); expect((await request('/v1/groups', 'POST', { client_id: c.id, name: 'Items', page_ids: [p.id] }, headers)).status).toBe(201); const property = await (await request('/v1/properties', 'POST', { client_id: c.id, type: 'gsc_url_prefix', external_id: 'https://moss.example/', auth_type: 'service_account' }, headers)).json() as any; expect(property.mode).toBe('mock'); });
     it('rejects invalid impact options and foreign controls', async () => { expect((await request('/v1/impact/title-refresh?days=0')).status).toBe(400); expect((await request('/v1/impact/title-refresh?control=foreign')).status).toBe(400); expect((await request('/v1/impact/title-refresh?property=foreign')).status).toBe(400); });
     it('MCP attributes logs to its bearer identity and handles idempotency', async () => { const headers = { Accept: 'application/json, text/event-stream' }; const body = { jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'log_change', arguments: { ...change, idempotency_key: 'mcp-retry' } } }; const a = await (await request('/mcp', 'POST', body, headers)).json() as any; const b = await (await request('/mcp', 'POST', body, headers)).json() as any; const first = JSON.parse(a.result.content[0].text); expect(first.id).toBe(JSON.parse(b.result.content[0].text).id); expect(first.source).toBe('mcp'); expect(first.author_id).toBe('demo-agent'); });
+});
+describe('stress-test hardening', () => {
+    const login = (email: string, pass: string, ip = '203.0.113.7') => app.request('http://localhost:8787/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': ip },
+        body: JSON.stringify({ email, pass }),
+    }, env);
+
+    it('rejects malformed JSON bodies with 400 instead of 500', async () => {
+        const raw = (path: string, method: string, body: string) => app.request('http://localhost:8787' + path, { method, headers: { ...auth, 'Content-Type': 'application/json' }, body }, env);
+        for (const [path, method, body] of [['/v1/changes', 'POST', '{bad'], ['/v1/changes', 'POST', ''], ['/v1/changes/title-refresh', 'PATCH', '{'], ['/auth/login', 'POST', 'nope'], ['/auth/accept', 'POST', '{']]) {
+            const r = await raw(path, method, body);
+            expect(r.status, `${method} ${path} ${JSON.stringify(body)}`).toBe(400);
+            expect((await r.json() as { error: string }).error).toBe('Request body must be valid JSON');
+        }
+        expect((await raw('/v1/changes', 'POST', '[]')).status).toBe(400);
+    });
+
+    it('throttles repeated sign-in attempts per email, then recovers after the window', async () => {
+        for (let i = 0; i < 10; i++)
+            expect((await login('alex@cedar.example', 'wrong-' + i)).status).toBe(401);
+        const blocked = await login('ALEX@cedar.example', 'notebook-demo-only');
+        expect(blocked.status).toBe(429);
+        expect(Number(blocked.headers.get('Retry-After'))).toBeGreaterThan(0);
+        // Another account from another address is unaffected.
+        expect((await login('sam@cedar.example', 'wrong', '198.51.100.2')).status).toBe(401);
+        sqlite.exec(`UPDATE login_attempt SET window_start='${new Date(Date.now() - 16 * 60_000).toISOString()}'`);
+        expect((await login('alex@cedar.example', 'notebook-demo-only')).status).toBe(200);
+        expect(sqlite.prepare("SELECT COUNT(*) n FROM login_attempt WHERE key='email:alex@cedar.example'").get()).toEqual({ n: 0 });
+    });
+
+    it('throttles one address spraying many emails', async () => {
+        for (let i = 0; i < 50; i++)
+            expect((await login(`user${i}@cedar.example`, 'wrong', '192.0.2.9')).status).toBe(401);
+        expect((await login('alex@cedar.example', 'notebook-demo-only', '192.0.2.9')).status).toBe(429);
+        expect((await login('alex@cedar.example', 'notebook-demo-only', '192.0.2.10')).status).toBe(200);
+        // Successful sign-ins do not use up an address's budget.
+        for (let i = 0; i < 60; i++)
+            expect((await login('alex@cedar.example', 'notebook-demo-only', '192.0.2.11')).status).toBe(200);
+    });
+
+    it('counts concurrent guesses so a burst cannot exceed the limit', async () => {
+        const results = await Promise.all(Array.from({ length: 25 }, (_, i) => login('alex@cedar.example', 'wrong-' + i)));
+        expect(results.filter(r => r.status === 401).length).toBe(10);
+        expect(results.filter(r => r.status === 429).length).toBe(15);
+    });
+
+    it('builds large reports with a constant query count and impacts identical to the single endpoint', async () => {
+        const insert = sqlite.prepare("INSERT INTO change_entry(id,client_id,occurred_at,timezone,status,type,page_ids,group_id,sitewide,summary,rationale,author_id,author_name,author_kind,model,source,evidence,expected_metric,tags,created_at,updated_at) VALUES (?,'cedar',?,'UTC','shipped','content',?,?,?,'bulk','bulk','demo-agent','Cedar Assistant','agent',NULL,'api','[]',?,'[]','2026-10-01','2026-10-01')");
+        for (let i = 0; i < 150; i++) {
+            const d = new Date(Date.UTC(2026, 7, 1 + (i % 80))).toISOString().slice(0, 10);
+            const kind = i % 3;
+            insert.run('bulk-' + i, d, kind === 0 ? '["garden"]' : '[]', kind === 1 ? 'control-guides' : null, kind === 2 ? 1 : 0, i % 4 === 0 ? 'ctr' : 'clicks');
+        }
+        let queries = 0;
+        const prepare = env.DB.prepare.bind(env.DB);
+        (env.DB as { prepare: unknown }).prepare = (sql: string) => { queries++; return prepare(sql); };
+        const r = await app.request('/public/reports/demo-read-only-report', {}, env);
+        expect(r.status).toBe(200);
+        expect(queries).toBeLessThan(25);
+        const report = await r.json() as { changes: { change: { id: string }; impact: Record<string, unknown> & { overlaps: string[]; overlap_count: number } }[] };
+        expect(report.changes.length).toBeGreaterThan(150);
+        (env.DB as { prepare: unknown }).prepare = prepare;
+        for (const { change, impact } of report.changes) {
+            expect(impact.change).toBeUndefined();
+            expect(impact.overlaps.length).toBeLessThanOrEqual(20);
+            const single = await (await request('/v1/impact/' + change.id)).json() as Record<string, unknown> & { overlaps: string[] };
+            expect(impact.overlap_count).toBe(single.overlaps.length);
+            expect(impact.overlaps).toEqual(single.overlaps.slice(0, 20));
+            for (const key of ['pre', 'post', 'percent', 'delta', 'confidence', 'scored', 'series', 'warnings', 'property_id', 'metric'])
+                expect(impact[key], `${change.id}.${key}`).toEqual(single[key]);
+        }
+    });
 });

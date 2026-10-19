@@ -39,6 +39,8 @@ crons = ["0 7 * * *"]
 [env.production]
 name = "seo-notebook"
 workers_dev = true
+# Preview URLs (<version>-seo-notebook.*.workers.dev) are not covered by the Access app.
+preview_urls = false
 [env.production.vars]
 CONNECTOR_MODE = "mock"
 APP_ORIGIN = "https://seo-notebook.evan-fde.workers.dev"

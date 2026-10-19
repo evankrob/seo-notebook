@@ -69,7 +69,7 @@ All `/v1` routes require a session or `Authorization: Bearer <agent-token>`. The
 | GET | `/v1/me` | Authenticated identity |
 | POST | `/v1/logout` | End session |
 
-`POST /auth/login` accepts `{email,pass}`; `POST /auth/accept` accepts `{token,name,password}` (minimum 12 characters). No signup endpoint exists. Public report endpoints are GET-only: `/reports/:token` (HTML), `/public/reports/:token` (JSON), `/public/reports/:token/export.csv`.
+`POST /auth/login` accepts `{email,pass}` and is throttled per 15-minute window: 10 attempts per email and 50 failed attempts per client IP, answered with `429` and `Retry-After`; `POST /auth/accept` accepts `{token,name,password}` (minimum 12 characters). No signup endpoint exists. Public report endpoints are GET-only: `/reports/:token` (HTML), `/public/reports/:token` (JSON), `/public/reports/:token/export.csv`.
 
 Example agent log:
 
