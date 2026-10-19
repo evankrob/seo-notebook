@@ -53,7 +53,7 @@ The notebook reads Search Console and GA4 with a Google **service account**. Its
 3. Give the service account's email read access: in Search Console, *Settings → Users and permissions* (Restricted is enough); in GA4, *Admin → Property access management* (Viewer).
 4. In the notebook, choose **Imports & data → Connect Google data**, pick the site's Search Console and GA4 properties, and connect.
 
-Connecting pulls 16 months of history for the site's pages. After that a daily cron re-pulls the last 7 days (Google revises recent data), and any page an agent logs for the first time gets its history pulled automatically. Only pages in the notebook are synced: Search Console is queried per page; GA4 reports **Organic Search** sessions and key events by landing page. The last three days are marked `fresh` and do not count towards scored impact windows.
+Connecting pulls 16 months of history for the site's pages. After that a daily cron re-pulls the last 7 days (Google revises recent data), and any page an agent logs for the first time gets its history pulled automatically. Only pages in the notebook are synced: Search Console is queried per page; GA4 reports **Organic Search** sessions and key events by landing page. The last three days are marked `fresh` and do not count towards scored impact windows. When a page is first logged, the notebook stores the URL Search Console reports for it (e.g. `https://www.example.com/` for `http://example.com/`). It picks the http/https and www variant with the most impressions in the last 90 days. If Search Console has none, it follows the URL's redirects. If both fail, it keeps the URL as sent.
 
 ## Connect an agent
 

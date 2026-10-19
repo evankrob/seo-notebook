@@ -7,7 +7,7 @@ Self-hosted Cloudflare Worker (Hono + D1 + Queues + R2): AI agents log SEO chang
 - `npm run check` = typecheck + lint (oxlint) + tests. **Run it before every commit; it is what CI runs.**
 
 ## Map
-- `apps/api/src/index.ts` HTTP routes (Hono). `auth.ts` Cloudflare Access JWT verification, local mode, agent bearer tokens. `service.ts` change log, URL → site/page resolution (`ensureSite`), scopes, `HttpError`, zod schemas. `jobs.ts` queued imports/ingestion. `mcp.ts` MCP server. `types.ts` Env/Actor/Change.
+- `apps/api/src/index.ts` HTTP routes (Hono). `auth.ts` Cloudflare Access JWT verification, local mode, agent bearer tokens. `service.ts` change log, URL → site/page resolution (`ensureSite`), scopes, `HttpError`, zod schemas. `jobs.ts` queued imports/ingestion. `redirects.ts` follows redirects (public http(s) only) so new pages store the URL Google reports. `mcp.ts` MCP server. `types.ts` Env/Actor/Change.
 - `packages/impact` pure impact/window math. `packages/connectors` fixture GSC/GA4, live Google client (`google.ts`), CSV parser.
 - `apps/web/app.js` browser UI. `migrations/` D1 schema. `fixtures/seed.sql` demo data (never for public instances).
 - Tests: `tests/impact.test.ts`, `tests/connectors.test.ts`, `tests/google.test.ts`, `tests/worker.test.ts` (real handlers + real migrations on SQLite via a D1-shaped adapter).

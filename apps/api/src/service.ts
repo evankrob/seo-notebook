@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { day, impact, windows } from '../../../packages/impact';
 import type { Actor, Change, Env, Metric } from './types';
 import { hash } from './auth';
+import { followRedirects } from './redirects';
+import { parseServiceAccount, reportedPageURL } from '../../../packages/connectors/google';
 export class HttpError extends Error {
     constructor(public status: number, message: string) { super(message); }
 }
@@ -143,7 +145,42 @@ export async function ensureSite(env: Env, actor: Actor, domain: string, timezon
     await env.DB.prepare('INSERT OR IGNORE INTO client(id,org_id,name,timezone,domain) VALUES (?,?,?,?,?)').bind(crypto.randomUUID(), actor.org_id, domain, timezone, domain).run();
     return (await find())!;
 }
-async function ensurePage(env: Env, clientId: string, url: string) {
+/**
+ * The URL to store for a page: an existing page with this exact URL, else the variant a live
+ * Search Console property reports, else where the URL redirects to on the same site, else the URL as sent.
+ */
+export async function pageURL(env: Env, clientId: string, url: string): Promise<string> {
+    if (await env.DB.prepare('SELECT id FROM page WHERE client_id=? AND url=?').bind(clientId, url).first())
+        return url;
+    for (const find of [() => searchConsoleURL(env, clientId, url), () => followRedirects(url)]) {
+        try {
+            const found = await find();
+            const final = found && normalizeURL(found);
+            if (final && siteDomain(final) === siteDomain(url))
+                return final;
+        }
+        catch {
+            // Google or the site is unreachable; try the next source.
+        }
+    }
+    return url;
+}
+/** The URL variant a live Search Console property of the site reports for `url`, if any. */
+async function searchConsoleURL(env: Env, clientId: string, url: string): Promise<string | null> {
+    const sa = parseServiceAccount(env.GOOGLE_SERVICE_ACCOUNT);
+    if (!sa)
+        return null;
+    const props = (await env.DB.prepare("SELECT p.external_id FROM property p JOIN connection c ON c.id=p.connection_id WHERE p.client_id=? AND c.mode='live' AND p.type IN ('gsc_domain','gsc_url_prefix')").bind(clientId).all<{ external_id: string }>()).results;
+    const today = new Date().toISOString().slice(0, 10);
+    for (const p of props) {
+        const found = await reportedPageURL(sa, p.external_id, url, today);
+        if (found)
+            return found;
+    }
+    return null;
+}
+async function ensurePage(env: Env, clientId: string, sent: string) {
+    const url = await pageURL(env, clientId, sent);
     const r = await env.DB.prepare("INSERT OR IGNORE INTO page(id,client_id,url,canonical,tags) VALUES (?,?,?,NULL,'[]')").bind(crypto.randomUUID(), clientId, url).run();
     const id = (await env.DB.prepare('SELECT id FROM page WHERE client_id=? AND url=?').bind(clientId, url).first<{ id: string }>())!.id;
     // A new page has no metrics yet; pull its history from any live Google property of the site.
