@@ -14,3 +14,6 @@ build/
 *.db
 *.sqlite
 *.sqlite3
+
+# Astro type cache
+.astro/
