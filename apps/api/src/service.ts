@@ -144,8 +144,12 @@ export async function ensureSite(env: Env, actor: Actor, domain: string, timezon
     return (await find())!;
 }
 async function ensurePage(env: Env, clientId: string, url: string) {
-    await env.DB.prepare("INSERT OR IGNORE INTO page(id,client_id,url,canonical,tags) VALUES (?,?,?,NULL,'[]')").bind(crypto.randomUUID(), clientId, url).run();
-    return (await env.DB.prepare('SELECT id FROM page WHERE client_id=? AND url=?').bind(clientId, url).first<{ id: string }>())!.id;
+    const r = await env.DB.prepare("INSERT OR IGNORE INTO page(id,client_id,url,canonical,tags) VALUES (?,?,?,NULL,'[]')").bind(crypto.randomUUID(), clientId, url).run();
+    const id = (await env.DB.prepare('SELECT id FROM page WHERE client_id=? AND url=?').bind(clientId, url).first<{ id: string }>())!.id;
+    // A new page has no metrics yet; pull its history from any live Google property of the site.
+    if (r.meta.changes)
+        await (await import('./jobs')).backfillPage(env, clientId, id);
+    return id;
 }
 export async function listSites(env: Env, actor: Actor) {
     scope(actor, 'read:metrics');

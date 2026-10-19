@@ -6,7 +6,7 @@ A self-hosted change log that your AI agents write to. When an agent edits a pag
 - **Yours.** Deploy it to your own Cloudflare account, or run it locally. There is no hosted service and no separate sign-in: on Cloudflare, [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) decides who can open the notebook.
 - **Honest impact.** Before/after windows, overlap detection, optional control groups and a confidence label that stays "Inconclusive" until the data supports more.
 
-> **Status:** Search Console and GA4 connectors still generate fixture data. Live data through a Google service account is the next phase; see [Roadmap](#roadmap).
+> **Status:** Search Console and GA4 data come from your Google service account; see [Connect Google data](#connect-google-data). Local development and tests use fixture data.
 
 ## Run locally
 
@@ -39,6 +39,21 @@ node scripts/stress.mjs   # load/robustness run against npm run dev
 5. Set `ACCESS_TEAM_DOMAIN` (e.g. `yourteam.cloudflareaccess.com`) and `ACCESS_AUD` (the UI application's *Application Audience (AUD) Tag*) in `[env.production.vars]`, then deploy again. The Worker verifies the Access JWT on every request; with these unset, a deployed notebook refuses all browser requests.
 
 `preview_urls = false` is set because preview URLs are not covered by Access.
+
+## Connect Google data
+
+The notebook reads Search Console and GA4 with a Google **service account**. Its JSON key is a Worker secret and is never stored in the database.
+
+1. In the service account's Google Cloud project, enable the **Google Search Console API**, the **Google Analytics Data API** and, for the property pick list, the **Google Analytics Admin API**.
+2. Store the key:
+   ```sh
+   npx wrangler secret put GOOGLE_SERVICE_ACCOUNT --env production < service-account.json
+   ```
+   Locally, put it in `.dev.vars` on one line: `GOOGLE_SERVICE_ACCOUNT='<output of jq -c . service-account.json>'`.
+3. Give the service account's email read access: in Search Console, *Settings → Users and permissions* (Restricted is enough); in GA4, *Admin → Property access management* (Viewer).
+4. In the notebook, choose **Imports & data → Connect Google data**, pick the site's Search Console and GA4 properties, and connect.
+
+Connecting pulls 16 months of history for the site's pages. After that a daily cron re-pulls the last 7 days (Google revises recent data), and any page an agent logs for the first time gets its history pulled automatically. Only pages in the notebook are synced: Search Console is queried per page; GA4 reports **Organic Search** sessions and key events by landing page. The last three days are marked `fresh` and do not count towards scored impact windows.
 
 ## Connect an agent
 
@@ -137,15 +152,14 @@ Overlaps include other shipped or reverted changes dated within either window or
 
 - `apps/api`: TypeScript Hono Worker: Access/agent auth, REST, MCP, Cron and Queue handlers, D1 persistence.
 - `apps/web`: dependency-free browser UI with SVG charts, served as Worker assets.
-- `packages/impact`: pure, tested windowing and scoring. `packages/connectors`: provider interface, fixture GSC/GA4 data and the CSV parser.
+- `packages/impact`: pure, tested windowing and scoring. `packages/connectors`: fixture GSC/GA4 data, the live Google service-account client (`google.ts`) and the CSV parser.
 - `migrations`, `fixtures`, `tests`: schema, fictional demo data, unit tests and Worker + real-SQLite integration tests.
 
 One D1 database per notebook. A notebook holds many sites, and every query is scoped to the workspace of the authenticated person or agent.
 
 ## Roadmap
 
-1. **Live Google data:** a Google service account for Search Console and GA4 (organic sessions by default), with a daily sync limited to pages that have logged changes.
-2. **Sign in with Google (OAuth)** as an alternative to the service account.
-3. **Automatic page snapshots** when a change is logged (title, meta, headings, text hash), so there is a record even when an agent sends little.
-4. **PR and commit links** as structured fields rather than plain evidence URLs.
-5. A **Deploy to Cloudflare** button.
+1. **Sign in with Google (OAuth)** as an alternative to the service account.
+2. **Automatic page snapshots** when a change is logged (title, meta, headings, text hash), so there is a record even when an agent sends little.
+3. **PR and commit links** as structured fields rather than plain evidence URLs.
+4. A **Deploy to Cloudflare** button.

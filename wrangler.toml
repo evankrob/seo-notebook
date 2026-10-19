@@ -41,6 +41,8 @@ name = "seo-notebook"
 workers_dev = true
 # Preview URLs (<version>-seo-notebook.*.workers.dev) are not covered by the Access app.
 preview_urls = false
+# Secret (not a var): GOOGLE_SERVICE_ACCOUNT, the Google service-account JSON key.
+#   npx wrangler secret put GOOGLE_SERVICE_ACCOUNT --env production < service-account.json
 [env.production.vars]
 CONNECTOR_MODE = "mock"
 # Cloudflare Access identifies humans. AUD = the Access application's "Application Audience (AUD) Tag".

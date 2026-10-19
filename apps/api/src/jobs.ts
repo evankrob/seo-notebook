@@ -1,38 +1,75 @@
-import { connector } from '../../../packages/connectors';
+import { connector, syncWindow } from '../../../packages/connectors';
+import { parseServiceAccount, syncAnalytics, syncSearchConsole } from '../../../packages/connectors/google';
 import { parseCSV } from '../../../packages/connectors/csv';
 import { day, date, logChange, storeMetrics } from './service';
 import type { Env, Job, Metric } from './types';
 import { z } from 'zod';
+interface SyncProperty {
+    id: string;
+    client_id: string;
+    type: string;
+    external_id: string;
+    mode: string;
+}
+const propertySQL = "SELECT p.id,p.client_id,p.type,p.external_id,COALESCE(c.mode,'mock') AS mode FROM property p LEFT JOIN connection c ON c.id=p.connection_id WHERE p.type IN ('gsc_domain','gsc_url_prefix','ga4')";
+
+async function sendAll(env: Env, jobs: Job[]) {
+    for (let i = 0; i < jobs.length; i += 100)
+        await env.JOBS.sendBatch(jobs.slice(i, i + 100).map(body => ({ body })));
+    return jobs.length;
+}
+
+/** Live jobs for one property: GA4 answers for every page at once, Search Console needs one query per page. */
+export async function liveJobs(env: Env, p: SyncProperty, start: string, end: string, pageId?: string): Promise<Job[]> {
+    if (p.type === 'ga4' || pageId)
+        return [{ kind: 'sync_range', propertyId: p.id, start, end, ...(pageId ? { pageId } : {}) }];
+    const pages = (await env.DB.prepare('SELECT id FROM page WHERE client_id=?').bind(p.client_id).all<{ id: string }>()).results;
+    return pages.map(pg => ({ kind: 'sync_range', propertyId: p.id, pageId: pg.id, start, end }));
+}
+
 export async function fanout(env: Env, propertyId?: string, backfill = false) {
     const today = new Date().toISOString().slice(0, 10);
-    const props = propertyId ? [{ id: propertyId }] : (await env.DB.prepare("SELECT id FROM property WHERE type IN ('gsc_domain','gsc_url_prefix','ga4')").all<{
-        id: string;
-    }>()).results;
-    const start = new Date(today);
-    if (backfill)
-        start.setUTCMonth(start.getUTCMonth() - 16);
-    else
-        start.setUTCDate(start.getUTCDate() - 7);
-    let count = 0;
+    const props = (await (propertyId ? env.DB.prepare(propertySQL + ' AND p.id=?').bind(propertyId) : env.DB.prepare(propertySQL)).all<SyncProperty>()).results;
+    const { start, end } = syncWindow(today, backfill);
+    const jobs: Job[] = [];
     for (const p of props) {
-        let messages: {
-            body: Job;
-        }[] = [];
-        for (let d = start.toISOString().slice(0, 10); d < today; d = day(d, 1)) {
-            messages.push({ body: { kind: 'sync', propertyId: p.id, date: d } });
-            count++;
-            if (messages.length === 100) {
-                await env.JOBS.sendBatch(messages);
-                messages = [];
-            }
-        }
-        if (messages.length)
-            await env.JOBS.sendBatch(messages);
+        if (p.mode === 'live')
+            jobs.push(...await liveJobs(env, p, start, end));
+        else
+            for (let d = start; d <= end; d = day(d, 1))
+                jobs.push({ kind: 'sync', propertyId: p.id, date: d });
     }
-    return count;
+    return sendAll(env, jobs);
 }
+
+/** History for a page the notebook just learned about, from every live property of its site. */
+export async function backfillPage(env: Env, clientId: string, pageId: string) {
+    const props = (await env.DB.prepare(propertySQL + " AND p.client_id=? AND c.mode='live'").bind(clientId).all<SyncProperty>()).results;
+    const { start, end } = syncWindow(new Date().toISOString().slice(0, 10), true);
+    const jobs: Job[] = [];
+    for (const p of props)
+        jobs.push(...await liveJobs(env, p, start, end, pageId));
+    return sendAll(env, jobs);
+}
+
+async function syncLive(env: Env, job: Extract<Job, { kind: 'sync_range' }>) {
+    const p = await env.DB.prepare(propertySQL + ' AND p.id=?').bind(job.propertyId).first<SyncProperty>();
+    if (!p || p.mode !== 'live')
+        return; // Removed or switched back to fixtures since the job was queued.
+    const sa = parseServiceAccount(env.GOOGLE_SERVICE_ACCOUNT);
+    if (!sa)
+        throw new Error('GOOGLE_SERVICE_ACCOUNT is not configured');
+    const pages = (await env.DB.prepare('SELECT id,url FROM page WHERE client_id=?' + (job.pageId ? ' AND id=?' : '')).bind(p.client_id, ...(job.pageId ? [job.pageId] : [])).all<{ id: string; url: string }>()).results;
+    if (!pages.length)
+        return;
+    const request = { propertyId: p.id, externalId: p.external_id, pages, start: job.start, end: job.end, today: new Date().toISOString().slice(0, 10) };
+    await storeMetrics(env, p.type === 'ga4' ? await syncAnalytics(sa, request) : await syncSearchConsole(sa, request));
+}
+
 const metricSchema = z.object({ property_id: z.string(), page_id: z.string(), date, metric: z.enum(['clicks', 'impressions', 'ctr', 'position', 'sessions', 'key_events', 'revenue', 'custom']), value: z.coerce.number().finite().nonnegative(), data_state: z.enum(['final', 'fresh']).default('final') });
 export async function processJob(env: Env, job: Job) {
+    if (job.kind === 'sync_range')
+        return syncLive(env, job);
     if (job.kind === 'sync') {
         const p = await env.DB.prepare('SELECT * FROM property WHERE id=?').bind(job.propertyId).first<any>();
         if (!p)
@@ -41,7 +78,7 @@ export async function processJob(env: Env, job: Job) {
             id: string;
             url: string;
         }>()).results;
-        const rows = await connector(p.type === 'ga4' ? 'ga4' : 'gsc', env.CONNECTOR_MODE).sync({ propertyId: p.id, pages, date: job.date, today: new Date().toISOString().slice(0, 10) });
+        const rows = await connector(p.type === 'ga4' ? 'ga4' : 'gsc', 'mock').sync({ propertyId: p.id, pages, date: job.date, today: new Date().toISOString().slice(0, 10) });
         await storeMetrics(env, rows);
         return;
     }

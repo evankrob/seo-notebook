@@ -242,7 +242,7 @@ summary { cursor: pointer; color: var(--text-2); }
 .modal { position: fixed; inset: 0; background: rgb(15 30 22 / 40%); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 20; }
 .modal .panel { width: 600px; max-width: 100%; max-height: 90vh; overflow: auto; }
 .modal pre { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px; margin: 0; }
-.modal [data-copy] { align-self: flex-start; margin: 6px 0 14px; }
+.modal [data-copy] { align-self: flex-start; justify-self: start; margin: 6px 0 14px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .wide { grid-column: 1 / -1; }
 .tools { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; }
@@ -289,3 +289,8 @@ table.agents th, table.agents td { text-align: left; padding: 9px 6px; border-bo
 fieldset { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 14px 14px; margin: 0; }
 label.row { flex-direction: row; font-size: 13px; }
 @media (max-width: 900px) { .chart text { font-size: 18px; } }
+.connected { display: grid; gap: 8px; border-top: 1px solid var(--border); padding-top: 14px; font-size: 13px; }
+.connected .nav-title { margin: 0; }
+.steps { padding-left: 20px; line-height: 1.6; font-size: 14px; }
+.steps pre { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px; margin: 6px 0; }
+.tools .wide { justify-content: center; }
