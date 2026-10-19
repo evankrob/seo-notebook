@@ -1,0 +1,67 @@
+<!doctype html>
+<!-- Source of public/og.png (1200×630 share preview). Regenerate with: node og/render.mjs -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; }
+    body {
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Inter, sans-serif;
+        color: #1d2a24; -webkit-font-smoothing: antialiased;
+        background: radial-gradient(circle at 85% 20%, #e3efe5 0, transparent 45%), #f4f6f3;
+        display: grid; grid-template-columns: 1fr 470px; gap: 48px; padding: 64px 72px;
+    }
+    .left { display: flex; flex-direction: column; }
+    .brand { display: flex; align-items: center; gap: 14px; font-weight: 700; font-size: 28px; letter-spacing: -0.02em; }
+    .logo { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 13px; background: #285b43; color: #fff; font-family: Georgia, serif; font-size: 31px; }
+    h1 { font-size: 66px; line-height: 1.04; letter-spacing: -0.04em; margin: 56px 0 0; font-weight: 760; }
+    h1 span { color: #3c805d; }
+    .foot { margin-top: auto; display: flex; gap: 10px; flex-wrap: wrap; }
+    .chip { font-size: 19px; color: #24553d; background: #e2eee4; border-radius: 999px; padding: 8px 18px; font-weight: 550; }
+    .chip.url { background: #285b43; color: #fff; }
+    .card { align-self: center; background: #fff; border: 1px solid #e3e8e1; border-radius: 26px; padding: 30px 32px; box-shadow: 0 2px 6px rgb(20 40 30 / 5%), 0 30px 70px -24px rgb(20 40 30 / 30%); }
+    .meta { display: flex; align-items: center; gap: 10px; font-size: 17px; color: #7d8a82; }
+    .avatar { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: #e8f1e9; color: #24553d; font-size: 13px; font-weight: 700; }
+    .pill { margin-left: auto; font-size: 14px; font-weight: 600; background: #e8f1e9; color: #24553d; border-radius: 999px; padding: 4px 12px; }
+    h2 { font-size: 25px; margin: 16px 0 14px; letter-spacing: -0.02em; }
+    .callout { border-left: 4px solid #3c805d; background: #f7f9f6; border-radius: 0 12px 12px 0; padding: 12px 16px; font-size: 18px; line-height: 1.45; }
+    .field { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: #7d8a82; font-weight: 600; margin-bottom: 4px; }
+    del { color: #975b4a; }
+    ins { color: #24553d; text-decoration: none; font-weight: 650; }
+    svg { display: block; width: 100%; height: 96px; margin: 18px 0 6px; }
+    .impact { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .impact div { background: #f7f9f6; border-radius: 12px; padding: 10px 14px; font-size: 12px; color: #7d8a82; letter-spacing: .05em; text-transform: uppercase; }
+    .impact strong { display: block; font-size: 26px; color: #1d2a24; letter-spacing: -0.02em; text-transform: none; margin-top: 2px; }
+    .impact .up strong { color: #3c805d; }
+</style>
+</head>
+<body>
+    <div class="left">
+        <div class="brand"><span class="logo">N</span>SEO Notebook</div>
+        <h1>Your agents change your site. <span>See what it did.</span></h1>
+        <div class="foot">
+            <span class="chip url">seonotebook.dev</span>
+            <span class="chip">Open source</span>
+            <span class="chip">GSC + GA4</span>
+        </div>
+    </div>
+    <div class="card">
+        <div class="meta"><span class="avatar">CC</span>Claude Code · via MCP<span class="pill">shipped</span></div>
+        <h2>Clarified the garden tools title</h2>
+        <div class="callout">
+            <div class="field">Title</div>
+            <del>Garden Tools | Cedar &amp; Finch</del> → <ins>Durable Garden Tools for Small Yards</ins>
+        </div>
+        <svg viewBox="0 0 400 96" aria-hidden="true">
+            <path d="M0,70 L20,62 L40,72 L60,60 L80,68 L100,58 L120,70 L140,60 L160,66 L180,56 L200,52 L220,40 L240,46 L260,30 L280,38 L300,24 L320,32 L340,18 L360,28 L380,14 L400,20" fill="none" stroke="#3c805d" stroke-width="3.5" stroke-linejoin="round" />
+            <circle cx="200" cy="52" r="7" fill="#fff" stroke="#b38c42" stroke-width="3.5" />
+        </svg>
+        <div class="impact">
+            <div>Before<strong>588</strong></div>
+            <div>After<strong>792</strong></div>
+            <div class="up">Change<strong>+34.7%</strong></div>
+        </div>
+    </div>
+</body>
+</html>
