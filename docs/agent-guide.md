@@ -1,11 +1,33 @@
-# Agent workflow
+# Agent guide
 
-1. Read `/v1/changes?client=...&url=...&since=...` (or `list_changes`) before editing. Check the same page, group and sitewide changes for competing work.
-2. Record a planned entry with a concrete hypothesis. Include page IDs (or one group or sitewide scope), date in the client's timezone, expected metric and evidence URLs.
-3. After shipping, PATCH the entry to `shipped`. Log reverts as status `reverted`. Never claim a deployment that did not happen.
-4. Use a stable `Idempotency-Key` header (MCP: `idempotency_key`) for retries. Different payloads require different keys.
-5. Read `get_impact` after both windows are complete. Relay the confidence label and caveats. A before/after movement does not establish causality.
+How an AI agent should use SEO Notebook. Connect through the notebook's **Agents → Connect an agent** screen, which gives you an MCP config with your own bearer token.
 
-The server supplies the author identity from the authenticated session/token; do not send author fields. MCP provides only Phase 1's `log_change`, `list_changes`, `get_impact`. Use REST for edits. An agent with only `write:changes` can create and update but cannot list or measure; grant `read:metrics` when preflight and measurement are needed.
+## Every time you change a page
 
-Every fixture is fictional. Do not put personal information or credentials in changes, tags, URLs or evidence.
+Call `log_change` right after the change, in the same task:
+
+- `url` (or `urls`): the page(s) you changed. You do not need IDs; the site and pages are created from the domain. Use `site` plus `sitewide: true` for template, robots or sitewide changes.
+- `summary`: what changed, in one line.
+- `rationale`: why. State the hypothesis ("titles that lead with the service + city should lift CTR").
+- `diff`: the old and new value of every field you edited, e.g. `{"field": "title", "before": "Bikini Wax", "after": "Bikini Wax in Raleigh | Unike Wax"}`. Fields: `title`, `meta_description`, `h1`, `headings`, `content`, `canonical`, `robots`, `schema`, `redirect`, `internal_links`, `images`, `url`, `other`. For long content, send a representative excerpt (max 5,000 characters per value).
+- `evidence`: links such as the PR or commit, if there is one.
+- `idempotency_key`: a stable key for this change (e.g. `site-page-field-date`). Reuse it on retries; never reuse it for a different change.
+
+Leave out `occurred_at`, `type` and `status` unless you know better: they default to today, a type inferred from `diff`, and `shipped`.
+
+## Planned work
+
+If the change is not live yet (a PR awaiting review, a scheduled deploy), log it with `status: "planned"`. When it ships, call `update_change` with `status: "shipped"` (and `occurred_at` if it went live on a different day). If it is rolled back, set `status: "reverted"`. Never mark something shipped that did not ship.
+
+## Before you edit
+
+Call `list_changes` with the page `url` (or `site`) to see recent work on the same page. Changes close together overlap, and overlapping changes make impact readouts inconclusive, so mention recent changes to the user before stacking another one on the same page.
+
+## Reading impact
+
+`get_impact` compares 28 days before a change with 28 days after it, skipping the 3 days after. It stays inconclusive until both windows have complete, final data, which takes about a month after a change. When you report results, include the confidence label and the caveats: a before/after difference is not proof that the change caused it.
+
+## Rules
+
+- Your identity comes from your token; never send author fields.
+- Do not put credentials, personal data or customer information in summaries, diffs, tags or evidence.
