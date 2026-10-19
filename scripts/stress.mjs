@@ -22,15 +22,11 @@ rs = await pool(500, 50, () => req('/')); log('static index x500 @50', rs.every(
 
 // 2. Login (PBKDF2 100k) concurrency + brute force
 // Attempts are counted before verification, so >10 simultaneous sign-ins to one account are throttled by design.
-rs = await pool(100, 5, () => post('/auth/login', { email: 'alex@cedar.example', pass: 'notebook-demo-only' }, { 'Content-Type': 'application/json' }));
-log('login ok x100 @5', rs.every(r => r.status === 200), stats(rs));
-rs = await pool(300, 50, k => post('/auth/login', { email: 'victim@cedar.example', pass: 'wrong' + k }, { 'Content-Type': 'application/json', 'CF-Connecting-IP': '10.9.9.9' }));
-log('brute-force 300 bad passwords -> throttled (429)', rs.filter(r => r.status === 429).length >= 290, stats(rs));
-const knownU = await pool(8, 1, () => post('/auth/login', { email: 'alex@cedar.example', pass: 'x' }, { 'Content-Type': 'application/json', 'CF-Connecting-IP': '10.0.0.1' }));
-await post('/auth/login', { email: 'alex@cedar.example', pass: 'notebook-demo-only' }, { 'Content-Type': 'application/json', 'CF-Connecting-IP': '10.0.0.1' });
-const unknownU = await pool(8, 1, () => post('/auth/login', { email: 'nobody@cedar.example', pass: 'x' }, { 'Content-Type': 'application/json', 'CF-Connecting-IP': '10.0.0.2' }));
-const avg = a => a.reduce((s, r) => s + r.ms, 0) / a.length;
-log('login timing does not reveal valid emails', Math.abs(avg(knownU) - avg(unknownU)) < 15, `known=${avg(knownU).toFixed(1)}ms unknown=${avg(unknownU).toFixed(1)}ms`);
+// 2. Agent-first logging: concurrent URL-based writes racing to auto-create sites and pages
+rs = await pool(400, 50, k => post('/v1/changes', { url: `https://www.site${k % 20}.example/page-${k % 7}/?utm=${k}`, summary: `url stress ${k}`, rationale: 'stress', diff: [{ field: 'title', before: 'Old ' + k, after: 'New ' + k }] }));
+log('400 URL-based logs across 20 new domains @50', rs.every(r => r.status === 201), stats(rs));
+const sites = (await req('/v1/sites', { headers: AG })).body.filter(x => /^site\d+\.example$/.test(x.domain));
+log('auto-created exactly 20 sites with 7 pages each, no duplicates', sites.length === 20 && sites.every(x => x.pages === 7 && x.changes === 20), `sites=${sites.length} pages=${[...new Set(sites.map(x => x.pages))]} changes=${[...new Set(sites.map(x => x.changes))]}`);
 
 // 3. Write load
 const run = Date.now();
@@ -74,13 +70,12 @@ const bad = [
   ['bad since on timeline', req('/v1/timeline?client=cedar&since=yesterday', { headers: AG })],
   ['impact days=100000', req('/v1/impact/title-refresh?days=100000', { headers: AG })],
   ['PATCH invalid JSON', req('/v1/changes/title-refresh', { method: 'PATCH', headers: AG, body: '{' })],
-  ['login invalid JSON', post('/auth/login', '{', { 'Content-Type': 'application/json' })],
   ['MCP invalid JSON', post('/mcp', '{', { ...AG, Accept: 'application/json, text/event-stream' })],
 ];
 for (const [name, p] of bad) { const r = await p; const ok = r.status >= 400 && r.status < 500; log(`reject ${name}`, ok, `status=${r.status} ${JSON.stringify(r.body).slice(0, 140)}`); }
 
 // 7. Auth / isolation
-const noAuth = await req('/v1/changes?client=cedar'); log('no auth -> 401', noAuth.status === 401, `status=${noAuth.status}`);
+const noAuth = await post('/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/list' }, { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }); log('MCP without bearer token -> 401', noAuth.status === 401, `status=${noAuth.status}`);
 const sqli = await req(`/v1/changes?client=${encodeURIComponent("cedar' OR 1=1--")}`, { headers: AG }); log('SQLi in client filter returns nothing', sqli.status === 200 && sqli.body.length === 0, `status=${sqli.status}`);
 const crossList = await req('/v1/changes?client=cedar', { headers: AG2 }); log('other org list cedar -> empty', crossList.status === 200 && crossList.body.length === 0, `status=${crossList.status} n=${crossList.body.length}`);
 const crossImpact = await req('/v1/impact/title-refresh', { headers: AG2 }); log('other org impact -> 404', crossImpact.status === 404, `status=${crossImpact.status}`);
@@ -89,14 +84,12 @@ const crossCreate = await post('/v1/changes', change(), AG2); log('other org cre
 const crossTimeline = await req('/v1/timeline?client=cedar', { headers: AG2 }); log('other org timeline -> 404', crossTimeline.status === 404, `status=${crossTimeline.status}`);
 const crossImport = await req('/v1/metrics/import?client=cedar', { method: 'POST', headers: { ...AG2, 'Content-Type': 'text/csv' }, body: 'a' }); log('other org import -> 404', crossImport.status === 404, `status=${crossImport.status}`);
 const agentAdmin = await post('/v1/agents', { name: 'x', scopes: ['read:metrics'] }); log('agent cannot mint agents -> 403', agentAdmin.status === 403, `status=${agentAdmin.status}`);
-const login = await fetch(B + '/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'alex@cedar.example', pass: 'notebook-demo-only' }) });
-const cookie = login.headers.get('set-cookie').split(';')[0];
-const csrf = await post('/v1/clients', { name: 'x', timezone: 'UTC' }, { Cookie: cookie, 'Content-Type': 'application/json', Origin: 'https://evil.example' }); log('cookie mutation w/ foreign Origin -> 403', csrf.status === 403, `status=${csrf.status}`);
-const csrf2 = await post('/v1/clients', { name: 'x', timezone: 'UTC' }, { Cookie: cookie, 'Content-Type': 'application/json' }); log('cookie mutation w/o Origin -> 403', csrf2.status === 403, `status=${csrf2.status}`);
+const csrf = await post('/v1/clients', { domain: 'csrf.example' }, { 'Content-Type': 'application/json', Origin: 'https://evil.example' }); log('browser write w/ foreign Origin -> 403', csrf.status === 403, `status=${csrf.status}`);
+const csrf2 = await post('/v1/clients', { domain: 'csrf.example' }, { 'Content-Type': 'application/json' }); log('browser write w/o Origin -> 403', csrf2.status === 403, `status=${csrf2.status}`);
 
 // 8. MCP under load
 const mcpH = { ...AG, Accept: 'application/json, text/event-stream' };
-rs = await pool(100, 20, k => post('/mcp', { jsonrpc: '2.0', id: k, method: 'tools/list' }, mcpH)); log('MCP tools/list x100 @20', rs.every(r => r.status === 200 && r.body.result?.tools?.length === 3), stats(rs));
+rs = await pool(100, 20, k => post('/mcp', { jsonrpc: '2.0', id: k, method: 'tools/list' }, mcpH)); log('MCP tools/list x100 @20', rs.every(r => r.status === 200 && r.body.result?.tools?.length === 5), stats(rs));
 rs = await pool(50, 10, k => post('/mcp', { jsonrpc: '2.0', id: k, method: 'tools/call', params: { name: 'log_change', arguments: { ...change({ summary: `mcp ${run} ${k % 10}` }), idempotency_key: `mcp-${run}-${k % 10}` } } }, mcpH));
 log('MCP log_change x50 (10 keys) no errors', rs.every(r => r.status === 200 && !r.body.result?.isError && !r.body.error), stats(rs));
 const after = await req('/v1/changes?client=cedar', { headers: AG }); const mcpRows = after.body.filter(c => c.summary.startsWith(`mcp ${run}`)).length;
@@ -111,7 +104,7 @@ for (const [name, body] of Object.entries(imports)) { const r = await req('/v1/m
 const big = await req('/v1/metrics/import?client=cedar', { method: 'POST', headers: { ...AG, 'Content-Type': 'text/csv' }, body: header + 'x'.repeat(1_100_000) }); log('import >1MB -> 413', big.status === 413, `status=${big.status}`);
 rs = await pool(30, 30, () => req('/v1/metrics/import?client=cedar', { method: 'POST', headers: { ...AG, 'Content-Type': 'text/csv' }, body: header + rows(2000) })); log('30 concurrent 2000-row imports queued', rs.every(r => r.status === 202), stats(rs));
 const burst = rs.map(r => r.body.id);
-const sync = await req('/v1/properties/cedar-gsc/sync?backfill=true', { method: 'POST', headers: { Cookie: cookie, Origin: new URL(B).origin, 'Content-Type': 'application/json' } }); log('16-month backfill queued', sync.status === 202, `status=${sync.status} queued=${sync.body.queued}`);
+const sync = await req('/v1/properties/cedar-gsc/sync?backfill=true', { method: 'POST', headers: { Origin: new URL(B).origin, 'Content-Type': 'application/json' } }); log('16-month backfill queued', sync.status === 202, `status=${sync.status} queued=${sync.body.queued}`);
 const deadline = Date.now() + 120_000; let pending = [];
 while (Date.now() < deadline) { const st = await Promise.all([...Object.values(jobIds), ...burst].map(id => req(`/v1/imports/${id}`, { headers: AG }))); pending = st.filter(s => s.body.status === 'queued' || s.body.status === 'processing'); if (!pending.length) break; await new Promise(r => setTimeout(r, 2000)); }
 for (const [name, id] of Object.entries(jobIds)) { const s = (await req(`/v1/imports/${id}`, { headers: AG })).body; const expectFail = /5001|bad value|foreign|garbage/.test(name); log(`import result: ${name}`, expectFail ? s.status === 'failed' : s.status === 'completed', `status=${s.status} rows=${s.row_count} err=${(s.error ?? '').slice(0, 100)}`); }

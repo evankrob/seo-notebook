@@ -4,8 +4,8 @@ import { drizzle } from 'drizzle-orm/d1';
 import { eq } from 'drizzle-orm';
 import { clients } from './schema';
 import type { Actor, Bindings, Env, Job } from './types';
-import { authenticate, clearLoginAttempts, countLoginAttempt, hash, loginKeys, password } from './auth';
-import { HttpError, client, date, day, getImpact, impactCache, listChanges, logChange, normalizeURL, scope, updateChange } from './service';
+import { accessConfigured, authenticate, hash } from './auth';
+import { HttpError, client, date, day, getImpact, impactCache, listSites, siteDomain, listChanges, logChange, normalizeURL, scope, updateChange } from './service';
 import { fanout, processJob } from './jobs';
 import { mcp } from './mcp';
 import { csvCell } from '../../../packages/connectors/csv';
@@ -21,40 +21,39 @@ const body = async (c: Context<Bindings>): Promise<unknown> => {
 app.use('*', async (c, next) => { await next(); c.header('X-Content-Type-Options', 'nosniff'); c.header('Referrer-Policy', 'no-referrer'); c.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'"); c.header('Cache-Control', 'no-store'); });
 app.onError((e, c) => c.json({ error: e instanceof ZodError ? e.issues.map(i => i.path.join('.') + ': ' + i.message).join('; ') : e instanceof HttpError ? e.message : 'Internal server error' }, e instanceof HttpError ? e.status as 400 : e instanceof ZodError ? 400 : 500));
 app.get('/health', c => c.json({ ok: true, mode: c.env.CONNECTOR_MODE }));
-app.post('/auth/login', async (c) => { const { email, pass } = z.object({ email: z.string().email(), pass: z.string().min(1).max(200) }).parse(await body(c));
-    const keys = loginKeys(email, c.req.header('CF-Connecting-IP'));
-    const wait = await countLoginAttempt(c.env, keys);
-    if (wait) {
-        c.header('Retry-After', String(wait));
-        return c.json({ error: 'Too many sign-in attempts. Try again later.' }, 429);
-    }
-    const m = await c.env.DB.prepare('SELECT * FROM member WHERE email=?').bind(email).first<any>();
-    // Derive a key even for unknown emails so response time does not reveal which accounts exist.
-    const digest = await password(pass, m?.salt ?? 'unknown-member');
-    if (!m || digest !== m.password_hash)
-        throw new HttpError(401, 'Invalid credentials');
-    await clearLoginAttempts(c.env, keys); const token = crypto.randomUUID() + crypto.randomUUID(); await c.env.DB.prepare('INSERT INTO session VALUES (?,?,?)').bind(await hash(token), m.id, new Date(Date.now() + 86400000).toISOString()).run(); c.header('Set-Cookie', `session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400${new URL(c.req.url).protocol === 'https:' ? '; Secure' : ''}`); return c.json({ ok: true }); });
-app.post('/auth/accept', async (c) => { const a = z.object({ token: z.string(), name: z.string().min(1).max(100), password: z.string().min(12).max(200) }).parse(await body(c)); const i = await c.env.DB.prepare('SELECT * FROM invite WHERE token_hash=? AND used=0 AND expires_at>?').bind(await hash(a.token), new Date().toISOString()).first<any>(); if (!i)
-    throw new HttpError(400, 'Invalid invite'); const salt = crypto.randomUUID(); const digest = await password(a.password, salt); const id = crypto.randomUUID(); await c.env.DB.batch([c.env.DB.prepare('INSERT INTO member(id,org_id,name,email,password_hash,salt,role) SELECT ?,org_id,?,email,?,?,role FROM invite WHERE token_hash=? AND used=0').bind(id, a.name, digest, salt, await hash(a.token)), c.env.DB.prepare('UPDATE invite SET used=1 WHERE token_hash=? AND used=0').bind(await hash(a.token))]); return c.json({ ok: true }); });
-app.use('/v1/*', async (c, next) => { const actor = await authenticate(c.req.raw, c.env); if (!actor)
-    throw new HttpError(401, 'Authentication required'); if (actor.kind === 'human' && !['GET', 'HEAD'].includes(c.req.method) && c.req.header('Origin') !== c.env.APP_ORIGIN)
-    throw new HttpError(403, 'Origin mismatch'); c.set('actor', actor); await next(); });
-app.get('/v1/me', c => c.json(c.get('actor')));
-app.post('/v1/logout', async (c) => { const token = c.req.header('Cookie')?.match(/(?:^|;\s*)session=([^;]+)/)?.[1]; if (token)
-    await c.env.DB.prepare('DELETE FROM session WHERE token_hash=?').bind(await hash(token)).run(); c.header('Set-Cookie', 'session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); return c.json({ ok: true }); });
+app.use('/v1/*', async (c, next) => {
+    const actor = await authenticate(c.req.raw, c.env);
+    if (!actor)
+        throw new HttpError(401, accessConfigured(c.env) ? 'Sign in through Cloudflare Access' : 'Authentication required');
+    // Browser identity rides on the Access cookie, so cross-site writes must be refused.
+    if (actor.kind === 'human' && !['GET', 'HEAD'].includes(c.req.method) && c.req.header('Origin') !== new URL(c.req.url).origin)
+        throw new HttpError(403, 'Origin mismatch');
+    c.set('actor', actor);
+    await next();
+});
+app.get('/v1/me', c => c.json({ ...c.get('actor'), auth: c.get('actor').kind === 'agent' ? 'token' : accessConfigured(c.env) ? 'access' : 'local' }));
+app.get('/v1/sites', async (c) => c.json(await listSites(c.env, c.get('actor'))));
+app.get('/v1/agents', async (c) => { admin(c.get('actor')); return c.json((await c.env.DB.prepare('SELECT id,name,model,scopes,revoked FROM agent_token WHERE org_id=? ORDER BY revoked, name').bind(c.get('actor').org_id).all<{ scopes: string }>()).results.map(a => ({ ...a, scopes: JSON.parse(a.scopes) }))); });
 const admin = (a: Actor) => { if (a.kind !== 'human' || a.role !== 'admin')
     throw new HttpError(403, 'Workspace admin required'); };
-app.post('/v1/invites', async (c) => { const a = c.get('actor'); admin(a); const b = z.object({ email: z.string().email(), role: z.enum(['admin', 'editor']).default('editor') }).parse(await body(c)); const token = crypto.randomUUID(); await c.env.DB.prepare('INSERT INTO invite VALUES (?,?,?,?,?,0)').bind(await hash(token), a.org_id, b.email, b.role, new Date(Date.now() + 7 * 86400000).toISOString()).run(); return c.json({ token, expires_in_days: 7 }, 201); });
 app.post('/v1/agents', async (c) => { const a = c.get('actor'); admin(a); const b = z.object({ name: z.string().min(1).max(100), model: z.string().optional(), scopes: z.array(z.enum(['write:changes', 'read:metrics'])).min(1) }).parse(await body(c)); const token = crypto.randomUUID() + crypto.randomUUID(), id = crypto.randomUUID(); await c.env.DB.prepare('INSERT INTO agent_token(id,org_id,name,model,token_hash,scopes) VALUES (?,?,?,?,?,?)').bind(id, a.org_id, b.name, b.model ?? null, await hash(token), JSON.stringify(b.scopes)).run(); return c.json({ id, token }, 201); });
 app.delete('/v1/agents/:id', async (c) => { admin(c.get('actor')); await c.env.DB.prepare('UPDATE agent_token SET revoked=1 WHERE id=? AND org_id=?').bind(c.req.param('id'), c.get('actor').org_id).run(); return c.json({ ok: true }); });
 app.get('/v1/clients', async (c) => { scope(c.get('actor'), 'read:metrics'); return c.json(await drizzle(c.env.DB).select().from(clients).where(eq(clients.orgId, c.get('actor').org_id))); });
-app.post('/v1/clients', async (c) => { admin(c.get('actor')); const b = z.object({ name: z.string().min(1).max(200), timezone: z.string().refine(s => { try {
-        new Intl.DateTimeFormat('en', { timeZone: s });
-        return true;
-    }
-    catch {
-        return false;
-    } }) }).parse(await body(c)); const id = crypto.randomUUID(); await c.env.DB.prepare('INSERT INTO client VALUES (?,?,?,?)').bind(id, c.get('actor').org_id, b.name, b.timezone).run(); return c.json({ id, ...b }, 201); });
+app.post('/v1/clients', async (c) => {
+    admin(c.get('actor'));
+    const b = z.object({ domain: z.string().min(1).max(253), name: z.string().min(1).max(200).optional(), timezone: z.string().default('UTC').refine(s => { try {
+            new Intl.DateTimeFormat('en', { timeZone: s });
+            return true;
+        }
+        catch {
+            return false;
+        } }, 'Invalid timezone') }).strict().parse(await body(c));
+    const domain = siteDomain(b.domain), id = crypto.randomUUID();
+    const r = await c.env.DB.prepare('INSERT OR IGNORE INTO client(id,org_id,name,timezone,domain) VALUES (?,?,?,?,?)').bind(id, c.get('actor').org_id, b.name ?? domain, b.timezone, domain).run();
+    if (!r.meta.changes)
+        throw new HttpError(409, 'Site already exists: ' + domain);
+    return c.json({ id, domain, name: b.name ?? domain, timezone: b.timezone }, 201);
+});
 app.get('/v1/clients/:id/context', async (c) => { const a = c.get('actor'); scope(a, 'read:metrics'); const cl = await client(c.env, a, c.req.param('id')); const [properties, pages, groups] = await Promise.all(['property', 'page', 'page_group'].map(t => c.env.DB.prepare(`SELECT * FROM ${t} WHERE client_id=?`).bind(cl.id).all())); return c.json({ client: cl, properties: properties.results, pages: pages.results, groups: groups.results }); });
 app.post('/v1/pages', async (c) => { const a = c.get('actor'); admin(a); const b = z.object({ client_id: z.string(), url: z.string().url(), canonical: z.string().url().optional(), tags: z.array(z.string()).default([]) }).parse(await body(c)); await client(c.env, a, b.client_id); const id = crypto.randomUUID(); await c.env.DB.prepare('INSERT INTO page VALUES (?,?,?,?,?)').bind(id, b.client_id, normalizeURL(b.url), b.canonical ? normalizeURL(b.canonical) : null, JSON.stringify(b.tags)).run(); return c.json({ id, ...b }, 201); });
 app.post('/v1/groups', async (c) => { const a = c.get('actor'); admin(a); const b = z.object({ client_id: z.string(), name: z.string().min(1), page_ids: z.array(z.string()).min(1).max(200) }).parse(await body(c)); await client(c.env, a, b.client_id); for (const id of b.page_ids)
@@ -98,8 +97,13 @@ async function reportData(env: Env, token: string) { const r = await env.DB.prep
         })) }; }
 app.get('/public/reports/:token', async (c) => c.json(await reportData(c.env, c.req.param('token'))));
 app.get('/public/reports/:token/export.csv', async (c) => { const r = await reportData(c.env, c.req.param('token')); const cols = ['date', 'status', 'type', 'who', 'what', 'why', 'confidence', 'before', 'after', 'percent']; const rows = r.changes.map(({ change: x, impact: i }) => [x.occurred_at, x.status, x.type, x.author_name, x.summary, x.rationale, i.confidence, i.pre, i.post, i.percent]); c.header('Content-Type', 'text/csv; charset=utf-8'); c.header('Content-Disposition', 'attachment; filename="seo-notebook-report.csv"'); return c.body([cols, ...rows].map(r => r.map(csvCell).join(',')).join('\r\n')); });
-app.all('/mcp', async (c) => { const a = await authenticate(c.req.raw, c.env); if (!a || a.kind !== 'agent')
-    throw new HttpError(401, 'Agent bearer token required'); return mcp(c.req.raw, c.env, a); });
+// Agents only. In production this path bypasses Cloudflare Access; the bearer token is the gate.
+app.all('/mcp', async (c) => {
+    const a = c.req.header('Authorization') ? await authenticate(c.req.raw, c.env) : null;
+    if (!a || a.kind !== 'agent')
+        throw new HttpError(401, 'Agent bearer token required');
+    return mcp(c.req.raw, c.env, a);
+});
 app.get('*', async (c) => { const p = new URL(c.req.url); if (p.pathname.startsWith('/v1/') || p.pathname.startsWith('/public/'))
     throw new HttpError(404, 'Not found'); if (p.pathname.startsWith('/reports/'))
     p.pathname = '/'; return c.env.ASSETS.fetch(new Request(p, c.req.raw)); });

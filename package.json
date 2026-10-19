@@ -12,7 +12,6 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "check": "npm run typecheck && npm run lint && npm test",
-    "mcp:stdio": "tsx packages/mcp/stdio.ts",
     "seed:generate": "node scripts/seed.mjs",
     "test:integration": "vitest run tests/worker.test.ts",
     "lint": "oxlint"

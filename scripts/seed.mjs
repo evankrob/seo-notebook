@@ -1,12 +1,11 @@
-import {pbkdf2Sync,createHash} from 'node:crypto';
+import {createHash} from 'node:crypto';
 import {writeFileSync} from 'node:fs';
 const hash=s=>createHash('sha256').update(s).digest('hex');
-const pass=pbkdf2Sync('notebook-demo-only','cedar-demo-salt',100000,32,'sha256').toString('hex');
 const quote=s=>"'"+String(s).replaceAll("'","''")+"'";
 let sql=`-- Fictional local fixtures only. Safe to rerun; leaves user-created data intact.\nINSERT OR IGNORE INTO org VALUES ('demo-org','Notebook Studio','self-host');
-INSERT OR IGNORE INTO member VALUES ('demo-human','demo-org','Alex Morgan','alex@cedar.example','${pass}','cedar-demo-salt','admin');
+INSERT OR IGNORE INTO member VALUES ('demo-human','demo-org','Alex Morgan','alex@cedar.example','','','admin');
 INSERT OR IGNORE INTO agent_token(id,org_id,name,model,token_hash,scopes) VALUES ('demo-agent','demo-org','Cedar Assistant','fixture-model','${hash('demo-agent-token-not-a-secret')}','["write:changes","read:metrics"]');
-INSERT OR IGNORE INTO client VALUES ('cedar','demo-org','Cedar & Finch Supply','America/New_York');
+INSERT OR IGNORE INTO client(id,org_id,name,timezone,domain) VALUES ('cedar','demo-org','Cedar & Finch Supply','America/New_York','cedar.example');
 INSERT OR IGNORE INTO connection VALUES ('gsc-connection','demo-org','gsc','oauth','mock');
 INSERT OR IGNORE INTO connection VALUES ('ga-connection','demo-org','ga4','service_account','mock');
 INSERT OR IGNORE INTO property VALUES ('cedar-gsc','cedar','gsc_domain','sc-domain:cedar.example','gsc-connection');
@@ -23,7 +22,7 @@ const changes=[
  ['next-links','2026-10-20','planned','internal_links',['garden'],'Link buying guides to category pages','Help readers discover the next useful step.','demo-human','Alex Morgan','human','ui','clicks'],
  ['reverted-test','2026-08-12','reverted','CRO_layout',['contact'],'Reverted the sticky inquiry button','The experimental button obscured supporting information.','demo-human','Alex Morgan','human','ui','sessions']
 ];
-for(const [id,date,status,type,pages,summary,why,author,name,kind,source,metric] of changes){sql+='INSERT OR IGNORE INTO change_entry VALUES ('+[id,'cedar',date,'America/New_York',status,type,JSON.stringify(pages),null,0,summary,why,author,name,kind,kind==='agent'?'fixture-model':null,source,'[]',metric,'[]','2026-10-14T12:00:00Z','2026-10-14T12:00:00Z'].map(v=>v===null?'NULL':quote(v)).join(',')+');\n';}
+for(const [id,date,status,type,pages,summary,why,author,name,kind,source,metric] of changes){sql+='INSERT OR IGNORE INTO change_entry(id,client_id,occurred_at,timezone,status,type,page_ids,group_id,sitewide,summary,rationale,author_id,author_name,author_kind,model,source,evidence,expected_metric,tags,created_at,updated_at,diff) VALUES ('+[id,'cedar',date,'America/New_York',status,type,JSON.stringify(pages),null,0,summary,why,author,name,kind,kind==='agent'?'fixture-model':null,source,'[]',metric,'[]','2026-10-14T12:00:00Z','2026-10-14T12:00:00Z',JSON.stringify(id==='title-refresh'?[{field:'title',before:'Garden Tools | Cedar & Finch',after:'Durable Garden Tools for Small Yards | Cedar & Finch'}]:[])].map(v=>v===null?'NULL':quote(v)).join(',')+');\n';}
 for(let d=new Date('2026-08-01T00:00:00Z');d<=new Date('2026-10-14T00:00:00Z');d.setUTCDate(d.getUTCDate()+1)){
  const date=d.toISOString().slice(0,10),day=Math.floor(d.getTime()/86400000),fresh=date>='2026-10-12';
  ['garden','guides','contact'].forEach((page,i)=>{const base=18+i*3+(day%7),uplift=date>='2026-09-05'&&i===0?1.35:1;

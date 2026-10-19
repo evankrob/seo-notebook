@@ -10,7 +10,7 @@ run_worker_first = true
 
 [vars]
 CONNECTOR_MODE = "mock"
-APP_ORIGIN = "http://localhost:8787"
+# No ACCESS_* vars = local mode: loopback requests act as LOCAL_USER_EMAIL (default owner@localhost).
 
 [[d1_databases]]
 binding = "DB"
@@ -43,7 +43,10 @@ workers_dev = true
 preview_urls = false
 [env.production.vars]
 CONNECTOR_MODE = "mock"
-APP_ORIGIN = "https://seo-notebook.evan-fde.workers.dev"
+# Cloudflare Access identifies humans. AUD = the Access application's "Application Audience (AUD) Tag".
+# Agents reach /mcp through a separate Access application for that path with a Bypass policy.
+ACCESS_TEAM_DOMAIN = "raspy-scene-a7ef.cloudflareaccess.com"
+ACCESS_AUD = "06b8375b49d5652794e42f8d0a37fcc135a626498ba697708360a2120dd3c4a8"
 [[env.production.d1_databases]]
 binding = "DB"
 database_name = "seo-notebook"

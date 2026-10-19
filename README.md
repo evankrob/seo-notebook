@@ -1,104 +1,115 @@
 # SEO Notebook
 
-An MIT-licensed, agent-native SEO and CRO change log. Record who changed what and why, annotate a metrics timeline, and share a cautious before/after readout with a client. Inspired by open-seo's TypeScript, Cloudflare self-hosting and agent-first model.
+A self-hosted change log that your AI agents write to. When an agent edits a page (a title, a meta description, an H1, a block of content), it records what changed, the old and new values, and why. The notebook then lines those changes up against Google Search Console and Google Analytics so you can see the before and after.
 
-**Phase 1 is local and fixture-backed.** No Google, DataForSEO, OAuth or other provider requests are implemented. Nothing in setup creates Cloudflare resources or deploys a Worker. Demo data belongs to fictional **Cedar & Finch Supply** at `cedar.example`.
+- **Agent-first.** Agents connect over MCP and log changes by URL. Sites and pages are created automatically from the domain; nobody sets anything up by hand. Manual logging in the UI is still there.
+- **Yours.** Deploy it to your own Cloudflare account, or run it locally. There is no hosted service and no separate sign-in: on Cloudflare, [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) decides who can open the notebook.
+- **Honest impact.** Before/after windows, overlap detection, optional control groups and a confidence label that stays "Inconclusive" until the data supports more.
+
+> **Status:** Search Console and GA4 connectors still generate fixture data. Live data through a Google service account is the next phase; see [Roadmap](#roadmap).
 
 ## Run locally
 
-Requires **Node 22.14+** and npm. All application development runs in Wrangler, with local D1, R2 and Queues emulation; no separate Vite, Node or Docker server.
+Requires **Node 22.14+**. Everything runs inside Wrangler with local D1, R2 and Queues.
 
 ```sh
 npm ci
 cp .env.example .dev.vars
-npm run setup
-npm run dev
+npm run setup      # local migrations + fictional demo data
+npm run dev        # http://localhost:8787
 ```
 
-Open `http://localhost:8787`. Sign in as `alex@cedar.example` with `notebook-demo-only`. Both are public local fixtures, not real credentials. A second person joins through an admin-created invitation; there is no public registration. Share invite tokens yourself; the app sends no email.
-
-Demo report: `http://localhost:8787/reports/demo-read-only-report`. Its token grants only report reading and CSV export. Create and revoke report links through the authenticated API. New report and agent tokens are randomly generated and stored only as SHA-256 hashes.
+Locally there is no login: requests to `localhost` act as `LOCAL_USER_EMAIL` (default `owner@localhost`). This only applies when Cloudflare Access is not configured and the request host is a loopback address. The demo data belongs to a fictional store, **Cedar & Finch Supply** at `cedar.example`, and includes a demo agent token, `demo-agent-token-not-a-secret`. Never load the demo data into a deployed notebook.
 
 ```sh
-npm run check             # TypeScript + all tests
-npm run test:integration  # direct Worker + SQLite tests; no listening socket
-npm run seed:generate    # regenerate deterministic fixtures/seed.sql
+npm run check             # TypeScript + lint + tests (what CI runs)
+node scripts/stress.mjs   # load/robustness run against npm run dev
 ```
 
-`npm run setup` applies local migrations and inserts fixtures without replacing existing rows. Wrangler persists data in `.wrangler/state`. For a clean local demo, stop Wrangler, remove `.wrangler/state`, and rerun setup. Do not remove that directory if you need your local entries.
+## Deploy to your Cloudflare
 
-The demo's historical metrics cover August 1–October 14, 2026. A September title change has measurable lift, two form changes overlap, another change is planned, and one is reverted. The last three seeded days are fresh. Queue a seven-day sync or sixteen-month backfill using Workspace tools to generate additional daily fixtures. Scheduled sync runs at `0 7 * * *` (UTC); during local dev trigger it explicitly:
+1. Create the resources and put their IDs in `[env.production]` in `wrangler.toml`: a D1 database, an R2 bucket and a Queue.
+2. Apply migrations and deploy:
+   ```sh
+   npx wrangler d1 migrations apply DB --env production --remote
+   npx wrangler deploy --env production
+   ```
+3. **Protect the UI with Cloudflare Access.** In Zero Trust → Access → Applications, add a self-hosted application for the Worker's hostname with an Allow policy listing the people who may use the notebook. Everyone it lets in is a notebook admin.
+4. **Let agents through to `/mcp`.** Add a second Access application for the same hostname with path `mcp` and a **Bypass** policy. Agent bearer tokens protect that path.
+5. Set `ACCESS_TEAM_DOMAIN` (e.g. `yourteam.cloudflareaccess.com`) and `ACCESS_AUD` (the UI application's *Application Audience (AUD) Tag*) in `[env.production.vars]`, then deploy again. The Worker verifies the Access JWT on every request; with these unset, a deployed notebook refuses all browser requests.
+
+`preview_urls = false` is set because preview URLs are not covered by Access.
+
+## Connect an agent
+
+Open the notebook, choose **Agents → Connect an agent**, and name it (e.g. "Claude Code · unikewax repo"). You get a one-time token and ready-made config:
 
 ```sh
-curl 'http://localhost:8787/__scheduled?cron=0+7+*+*+*'
+claude mcp add --transport http seo-notebook https://<your-notebook>/mcp \
+  --header "Authorization: Bearer <token>"
 ```
 
-Queue jobs are one property-day each; daily sync revisits the previous seven days and marks the latest three days fresh. Backfill starts sixteen calendar months before today. Reprocessing upserts the same property/page/date/metric key. Local Queue delivery is asynchronous; inspect the timeline again after processing.
+```json
+{ "mcpServers": { "seo-notebook": { "url": "https://<your-notebook>/mcp", "headers": { "Authorization": "Bearer <token>" } } } }
+```
 
-## Workspace and reports
+Then add one line to the agent's project rules (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`) so it logs every edit. The setup screen gives you the exact text; [docs/agent-guide.md](docs/agent-guide.md) has the full workflow. Each agent gets its own token, so its changes are attributed to it and it can be revoked on its own.
 
-The workspace supports clients, mock properties (GSC domain/prefix, GA4, custom), normalized pages, named page groups, and changes scoped to pages, one group or the entire client site. Add evidence links, rationale, types and expected metrics; edit, plan, ship or revert entries. Agent identity comes from the token, never a supplied author field.
+## What an agent sends
 
-Filter daily metrics and timeline markers by client, property and page. Select a change for its impact card and optional control group. Controls must exclude treatment pages. Create a read-only report for a client and date period; it includes shipped, planned and reverted work, per-change charts, impact notes, and CSV export. Reports reflect current data, not frozen snapshots. Revocation invalidates the share token.
+```json
+{
+  "url": "https://www.unikewax.com/bikini-wax/",
+  "summary": "Rewrote the title and meta description",
+  "rationale": "Match the dominant query wording from Search Console",
+  "diff": [
+    { "field": "title", "before": "Bikini Wax", "after": "Bikini Wax in Raleigh | Unike Wax" },
+    { "field": "meta_description", "before": null, "after": "Book a bikini wax in Raleigh." }
+  ],
+  "evidence": ["https://github.com/acme/unikewax/pull/42"],
+  "idempotency_key": "unikewax-bikini-wax-title-2026-10-19"
+}
+```
 
-Only workspace admins create clients, pages, properties, groups, invitations, reports and agent tokens. Editors can log/edit changes and import data. Agent capabilities are restricted to `write:changes` and `read:metrics`; they cannot administer a workspace. Sessions are HttpOnly, SameSite=Strict, valid for 24 hours, and Secure on HTTPS. Cookie-authenticated mutations require `Origin` to equal `APP_ORIGIN`. Passwords use PBKDF2-SHA256 with per-user salt and 100,000 iterations. There is no live OAuth or credential storage in this mock build.
+- **Target:** `url` or `urls` (one site per change; `www.` and the bare domain are the same site), or `site` plus `sitewide: true`. Query strings and fragments are dropped from page URLs.
+- **`diff` fields:** `title`, `meta_description`, `h1`, `headings`, `content`, `canonical`, `robots`, `schema`, `redirect`, `internal_links`, `images`, `url`, `other`. Up to 20 entries, 5,000 characters per value; agents should excerpt long content.
+- **Defaults:** `occurred_at` is today in `timezone` (default UTC), `status` is `shipped`, `type` is inferred from the diff (title/meta → `title_meta`), and `expected_metric` is `clicks`.
+- The author is always the authenticated agent; author fields cannot be sent.
+
+## MCP tools
+
+Served at **`/mcp`** (Streamable HTTP, stateless, JSON responses), bearer token required.
+
+| Tool | Purpose |
+|---|---|
+| `log_change` | Record a change by URL with old → new values. Retry with the same `idempotency_key`. |
+| `update_change` | Mark a planned change `shipped`, mark one `reverted`, or correct details. |
+| `list_sites` | Sites with page and change counts and the latest change date. |
+| `list_changes` | Changes, newest first; filter by `site`, `url`, `since`, `until`. |
+| `get_impact` | Before/after readout with confidence, overlaps and caveats. |
 
 ## REST API
 
-All `/v1` routes require a session or `Authorization: Bearer <agent-token>`. The demo bearer token is `demo-agent-token-not-a-secret`. Never use demo fixtures on a publicly accessible instance. JSON errors use `{ "error": "..." }`. Change lists are capped at 1,000 entries; timeline metrics at 20,000 rows.
+The browser UI uses these with the Access session. Agent bearer tokens also work, but in production only `/mcp` bypasses Access, so agents should use MCP. Errors are `{ "error": "..." }`. Cookie-authenticated writes must come from the notebook's own origin.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET / POST | `/v1/clients` | List / create clients |
-| GET | `/v1/clients/:id/context` | Client properties, pages and groups |
-| POST | `/v1/pages`, `/v1/groups`, `/v1/properties` | Create client entities |
-| POST | `/v1/properties/:id/sync?backfill=true` | Queue mock backfill; omit flag for seven-day refresh |
-| POST | `/v1/changes` | Create; optional `Idempotency-Key` header |
-| PATCH | `/v1/changes/:id` | Edit, ship or revert; creator identity preserved |
-| GET | `/v1/changes?client=&url=&since=&until=` | List/filter entries |
+| GET | `/v1/me` | Current identity and auth mode (`access`, `local` or `token`) |
+| GET | `/v1/sites` | Sites with counts |
+| GET / POST | `/v1/clients` | List sites / create one from `{domain,name?,timezone?}` |
+| GET | `/v1/clients/:id/context` | A site's properties, pages and groups |
+| POST | `/v1/pages`, `/v1/groups`, `/v1/properties` | Create site entities |
+| POST | `/v1/properties/:id/sync?backfill=true` | Queue fixture backfill; omit the flag for a seven-day refresh |
+| GET / POST | `/v1/changes` | List (`?site=&client=&url=&since=&until=`) / create (same body as `log_change`; `Idempotency-Key` header) |
+| PATCH | `/v1/changes/:id` | Edit, ship or revert |
 | GET | `/v1/impact/:id?control=&property=&metric=&days=28&lag=3` | Before/after readout |
-| GET | `/v1/timeline?client=&property=&page=&metric=&since=` | Daily series and scoped markers |
-| POST | `/v1/metrics/import?client=...` | Raw CSV or JSON array → R2 + Queue |
-| POST | `/v1/changes/import?client=...` | Past changes CSV → R2 + Queue |
-| GET | `/v1/imports/:id` | Status, error and imported row count |
-| POST | `/v1/reports` | `{client_id,title,since,until}` → one-time share URL |
-| DELETE | `/v1/reports/:id` | Revoke report |
-| POST | `/v1/invites` | `{email,role?}` → seven-day one-time invite token |
-| POST | `/v1/agents` | `{name,model?,scopes}` → one-time bearer token + ID |
-| DELETE | `/v1/agents/:id` | Revoke agent token |
-| GET | `/v1/me` | Authenticated identity |
-| POST | `/v1/logout` | End session |
+| GET | `/v1/timeline?client=&property=&page=&metric=&since=` | Daily series and change markers |
+| POST | `/v1/metrics/import?client=`, `/v1/changes/import?client=` | Raw CSV (or JSON for metrics) → R2 + Queue |
+| GET | `/v1/imports/:id` | Import status |
+| GET / POST / DELETE | `/v1/agents`, `/v1/agents/:id` | List, create (one-time token) and revoke agents |
+| POST / DELETE | `/v1/reports`, `/v1/reports/:id` | Create / revoke a read-only report link |
 
-`POST /auth/login` accepts `{email,pass}` and is throttled per 15-minute window: 10 attempts per email and 50 failed attempts per client IP, answered with `429` and `Retry-After`; `POST /auth/accept` accepts `{token,name,password}` (minimum 12 characters). No signup endpoint exists. Public report endpoints are GET-only: `/reports/:token` (HTML), `/public/reports/:token` (JSON), `/public/reports/:token/export.csv`.
-
-Example agent log:
-
-```sh
-curl http://localhost:8787/v1/changes \
-  -H 'Authorization: Bearer demo-agent-token-not-a-secret' \
-  -H 'Content-Type: application/json' \
-  -H 'Idempotency-Key: cedar-title-2026-10-15' \
-  --data '{"client_id":"cedar","occurred_at":"2026-10-15","timezone":"America/New_York","status":"shipped","type":"title_meta","page_ids":["garden"],"summary":"Clarified the title","rationale":"Improve qualified clicks","expected_metric":"clicks","evidence":[]}'
-```
-
-Exactly one scope must be provided: nonempty `page_ids`, `group_id`, or `sitewide: true`. Date is `YYYY-MM-DD`, with a separate IANA timezone. Daily provider dates are treated as calendar dates in the property/client reporting timezone. URLs accept HTTP(S), remove query strings/fragments, retain path case and trailing slashes; canonical is stored separately. All entity relationships are checked against the authorized client/org.
-
-## MCP
-
-Remote Streamable HTTP is served from the same Worker at **`/mcp`**, using the official MCP SDK, stateless per-request transport and JSON responses. Supply a unique bearer token per agent. Supported tools:
-
-- `log_change`: the REST change schema plus optional `idempotency_key`.
-- `list_changes`: optional `client`, `url`, `since`.
-- `get_impact`: `change_id`, optional `control`, `property`, `metric`, `days`, `lag`.
-
-MCP initializes normally and supports `tools/list` and `tools/call`. For clients requiring stdio, run the bridge while Wrangler is running:
-
-```sh
-NOTEBOOK_URL=http://localhost:8787 \
-NOTEBOOK_TOKEN=demo-agent-token-not-a-secret npm run mcp:stdio
-```
-
-The stdio process is only an MCP-to-local-REST bridge; Wrangler remains the application runtime. The bridge rejects non-loopback URLs. Give your agents the workflow in [docs/agent-guide.md](docs/agent-guide.md).
+Public report endpoints are GET-only: `/reports/:token`, `/public/reports/:token`, `/public/reports/:token/export.csv`. Behind Access they are only reachable by people the Access policy allows, unless you add a Bypass for those paths too.
 
 ## CSV / JSON import
 
@@ -122,23 +133,19 @@ Confidence is a documented heuristic, **not a p-value**:
 
 Overlaps include other shipped or reverted changes dated within either window or the lag interval whose resolved page scope intersects treatment pages, including groups and sitewide/external events. Planned entries are excluded. Controls should also be checked manually for changes; automatic clean-control selection is deferred. The UI warns about seasonality, paid traffic, GSC lag/revisions, query privacy filtering, low volume and lack of causal attribution. GA4 fixtures represent landing-page sessions and key events; real organic channel filtering remains a live-connector task.
 
-## Architecture and self-hosting
+## Architecture
 
-- `apps/api`: TypeScript Hono Worker, Drizzle D1 entity query, prepared SQL persistence, auth, REST, MCP, Cron and Queue handlers.
-- `apps/web`: dependency-free browser UI and SVG annotation charts, served as Worker assets. The scope's React/chart-library proposal is kept lightweight here; no separate frontend runtime or build server.
-- `packages/connectors`: provider interface, deterministic GSC/GA4 fixture implementation and CSV parser.
-- `packages/impact`: pure, tested windowing and scoring.
-- `packages/mcp`: local stdio bridge.
-- `migrations`, `fixtures`, `tests`: SQL schema, fictional data, unit and real-SQL integration tests.
+- `apps/api`: TypeScript Hono Worker: Access/agent auth, REST, MCP, Cron and Queue handlers, D1 persistence.
+- `apps/web`: dependency-free browser UI with SVG charts, served as Worker assets.
+- `packages/impact`: pure, tested windowing and scoring. `packages/connectors`: provider interface, fixture GSC/GA4 data and the CSV parser.
+- `migrations`, `fixtures`, `tests`: schema, fictional demo data, unit tests and Worker + real-SQLite integration tests.
 
-`wrangler.toml` binds D1 `DB`, R2 `UPLOADS`, Queue `JOBS`, assets and one daily Cron. Its database ID is an intentional all-zero placeholder. Wrangler local emulation does not require Cloudflare login. **Do not deploy this demo configuration.** The user-requested build is wrangler-only, so Docker and off-Cloudflare runtimes are intentionally excluded despite the broader scope's future self-hosting proposal.
+One D1 database per notebook. A notebook holds many sites, and every query is scoped to the workspace of the authenticated person or agent.
 
-For eventual private Cloudflare hosting, first provision your own D1/R2/Queue bindings, replace placeholders, set an HTTPS `APP_ORIGIN`, apply migrations to the intended database, and bootstrap a workspace/admin with newly generated password and token hashes. Do not seed public demo credentials or include fixtures on a public instance. Review rate limiting and backup/restore before exposing login. This repository provides configuration and migrations; provisioning/deployment are intentionally not automated or executed. A deployment with real ingestion will need capacity planning (the scope anticipates Workers Paid); no pricing guarantee is made here.
+## Roadmap
 
-This MVP uses one D1 database per self-hosted workspace with org checks at every API boundary. The scope's per-client D1 fleet, encrypted provider secrets, live OAuth/service-account auth, refresh serialization, raw provider archives and query-level retention are next-stage work. No unencrypted live credential path exists. R2 currently holds raw imports, not report PDFs. Outbound webhooks, PDF/email delivery, Ads, DataForSEO, GA4 annotation writes, auto-capture, causal models and billing are outside this build.
-
-## Build environment notes
-
-The restricted build sandbox disallows listening sockets, so `wrangler dev` and local D1 migration execution could not complete here. Direct Worker tests use real SQLite with D1-shaped adapters and in-memory R2/Queue, and test the official MCP transport. Run `npm run setup && npm run dev` on your normal machine for the final Wrangler/browser smoke check. See [BUILD-REPORT.md](BUILD-REPORT.md) for exact results and remaining limits.
-
-The workspace's original `.git` metadata is read-only. Work was committed incrementally using a separate Git directory and delivered as `seo-notebook-history.bundle`; see the build report to import that history into writable Git metadata.
+1. **Live Google data:** a Google service account for Search Console and GA4 (organic sessions by default), with a daily sync limited to pages that have logged changes.
+2. **Sign in with Google (OAuth)** as an alternative to the service account.
+3. **Automatic page snapshots** when a change is logged (title, meta, headings, text hash), so there is a record even when an agent sends little.
+4. **PR and commit links** as structured fields rather than plain evidence URLs.
+5. A **Deploy to Cloudflare** button.

@@ -4,6 +4,7 @@ export interface Actor {
     name: string;
     kind: 'human' | 'agent';
     model?: string;
+    email?: string;
     scopes: string[];
     role?: string;
 }
@@ -21,7 +22,12 @@ export interface Env {
     JOBS: Queue<Job>;
     ASSETS: Fetcher;
     CONNECTOR_MODE: string;
-    APP_ORIGIN: string;
+    /** Cloudflare Access team domain, e.g. myteam.cloudflareaccess.com. Unset = local mode. */
+    ACCESS_TEAM_DOMAIN?: string;
+    /** Application Audience (AUD) tag of the Access application protecting the UI. */
+    ACCESS_AUD?: string;
+    /** Identity used in local mode (Access not configured, loopback requests only). */
+    LOCAL_USER_EMAIL?: string;
 }
 export type Bindings = {
     Bindings: Env;
@@ -48,6 +54,13 @@ export interface Change {
     expected_metric: string;
     evidence: string[];
     tags: string[];
+    diff: FieldChange[];
+}
+export interface FieldChange {
+    field: string;
+    before: string | null;
+    after: string | null;
+    note?: string;
 }
 export interface Metric {
     property_id: string;

@@ -7,14 +7,17 @@ export class HttpError extends Error {
 }
 export const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(s => !isNaN(Date.parse(s)) && new Date(s).toISOString().slice(0, 10) === s, 'Invalid date');
 export const types = ['new_page', 'content', 'title_meta', 'internal_links', 'schema', 'redirect', 'template', 'technical', 'CRO_form', 'CRO_layout', 'ppc_landing', 'external_event'] as const;
+export const fields = ['title', 'meta_description', 'h1', 'headings', 'content', 'canonical', 'robots', 'schema', 'redirect', 'internal_links', 'images', 'url', 'other'] as const;
+// One edited field with its previous and new value. Long content should be excerpted by the agent.
+export const fieldChange = z.object({ field: z.enum(fields), before: z.string().max(5000).nullable().default(null), after: z.string().max(5000).nullable().default(null), note: z.string().max(300).optional() }).strict();
 export const changeSchema = z.object({ client_id: z.string().min(1), occurred_at: date, timezone: z.string().default('UTC').refine(s => { try {
         new Intl.DateTimeFormat('en', { timeZone: s });
         return true;
     }
     catch {
         return false;
-    } }, 'Invalid timezone'), status: z.enum(['planned', 'shipped', 'reverted']).default('shipped'), type: z.enum(types), page_ids: z.array(z.string()).max(200).default([]), group_id: z.string().nullable().default(null), sitewide: z.boolean().default(false), summary: z.string().min(1).max(500), rationale: z.string().min(1).max(4000), evidence: z.array(z.string().url().refine(s => /^https?:/.test(s))).max(20).default([]), expected_metric: z.enum(['clicks', 'impressions', 'ctr', 'position', 'sessions', 'key_events', 'revenue', 'custom']).default('clicks'), tags: z.array(z.string().max(80)).max(30).default([]) }).strict();
-export function decode(row: any): Change { return { ...row, page_ids: JSON.parse(row.page_ids), evidence: JSON.parse(row.evidence), tags: JSON.parse(row.tags) }; }
+    } }, 'Invalid timezone'), status: z.enum(['planned', 'shipped', 'reverted']).default('shipped'), type: z.enum(types), page_ids: z.array(z.string()).max(200).default([]), group_id: z.string().nullable().default(null), sitewide: z.boolean().default(false), summary: z.string().min(1).max(500), rationale: z.string().min(1).max(4000), evidence: z.array(z.string().url().refine(s => /^https?:/.test(s))).max(20).default([]), expected_metric: z.enum(['clicks', 'impressions', 'ctr', 'position', 'sessions', 'key_events', 'revenue', 'custom']).default('clicks'), tags: z.array(z.string().max(80)).max(30).default([]), diff: z.array(fieldChange).max(20).default([]) }).strict();
+export function decode(row: any): Change { return { ...row, page_ids: JSON.parse(row.page_ids), evidence: JSON.parse(row.evidence), tags: JSON.parse(row.tags), diff: JSON.parse(row.diff ?? '[]') }; }
 export async function client(env: Env, actor: Actor, id: string) { const c = await env.DB.prepare('SELECT * FROM client WHERE id=? AND org_id=?').bind(id, actor.org_id).first<any>(); if (!c)
     throw new HttpError(404, 'Client not found'); return c; }
 export function scope(actor: Actor, s: string) { if (!actor.scopes.includes(s))
@@ -28,6 +31,10 @@ export async function listChanges(env: Env, actor: Actor, q: Record<string, stri
     if (q.client) {
         sql += ' AND e.client_id=?';
         args.push(q.client);
+    }
+    if (q.site) {
+        sql += ' AND c.domain=?';
+        args.push(siteDomain(q.site));
     }
     if (q.since) {
         date.parse(q.since);
@@ -52,7 +59,13 @@ export async function listChanges(env: Env, actor: Actor, q: Record<string, stri
     }
     return rows;
 }
-export const normalizeURL = (s: string) => { const u = new URL(s); if (!['http:', 'https:'].includes(u.protocol) || u.username || u.password)
+export const normalizeURL = (s: string) => { let u: URL;
+    try {
+        u = new URL(s);
+    }
+    catch {
+        throw new HttpError(400, 'Invalid URL: ' + s.slice(0, 200));
+    } if (!['http:', 'https:'].includes(u.protocol) || u.username || u.password)
     throw new HttpError(400, 'Expected HTTP(S) URL'); u.hash = ''; u.search = ''; u.hostname = u.hostname.toLowerCase(); return u.toString(); };
 // Per-request memo for computing many impacts at once (reports). Data is loaded once for
 // the [start, end] date range and filtered in memory, so query count stays constant.
@@ -103,15 +116,90 @@ async function validateScope(env: Env, c: z.infer<typeof changeSchema>) {
     if (c.group_id && !await env.DB.prepare('SELECT id FROM page_group WHERE id=? AND client_id=?').bind(c.group_id, c.client_id).first())
         throw new HttpError(400, 'Group outside client');
 }
+/** Site key for a hostname or URL: lowercase, without a leading "www.". */
+export function siteDomain(hostOrUrl: string) {
+    let host: string;
+    try {
+        host = new URL(hostOrUrl.includes('://') ? hostOrUrl : 'https://' + hostOrUrl).hostname;
+    }
+    catch {
+        throw new HttpError(400, 'Invalid site: ' + hostOrUrl);
+    }
+    return host.toLowerCase().replace(/^www\./, '');
+}
+interface SiteRow {
+    id: string;
+    org_id: string;
+    name: string;
+    timezone: string;
+    domain: string;
+}
+/** Finds or creates the site for a domain in the actor's workspace. */
+export async function ensureSite(env: Env, actor: Actor, domain: string, timezone = 'UTC'): Promise<SiteRow> {
+    const find = () => env.DB.prepare('SELECT * FROM client WHERE org_id=? AND domain=?').bind(actor.org_id, domain).first<SiteRow>();
+    const found = await find();
+    if (found)
+        return found;
+    await env.DB.prepare('INSERT OR IGNORE INTO client(id,org_id,name,timezone,domain) VALUES (?,?,?,?,?)').bind(crypto.randomUUID(), actor.org_id, domain, timezone, domain).run();
+    return (await find())!;
+}
+async function ensurePage(env: Env, clientId: string, url: string) {
+    await env.DB.prepare("INSERT OR IGNORE INTO page(id,client_id,url,canonical,tags) VALUES (?,?,?,NULL,'[]')").bind(crypto.randomUUID(), clientId, url).run();
+    return (await env.DB.prepare('SELECT id FROM page WHERE client_id=? AND url=?').bind(clientId, url).first<{ id: string }>())!.id;
+}
+export async function listSites(env: Env, actor: Actor) {
+    scope(actor, 'read:metrics');
+    return (await env.DB.prepare(`SELECT c.id, c.domain, c.name, c.timezone,
+        (SELECT COUNT(*) FROM page p WHERE p.client_id=c.id) AS pages,
+        (SELECT COUNT(*) FROM change_entry e WHERE e.client_id=c.id) AS changes,
+        (SELECT MAX(e.occurred_at) FROM change_entry e WHERE e.client_id=c.id) AS last_change_at
+        FROM client c WHERE c.org_id=? ORDER BY last_change_at IS NULL, last_change_at DESC, c.domain`).bind(actor.org_id).all()).results;
+}
+// What agents send: URLs instead of IDs; date and type are optional.
+export const changeInputSchema = changeSchema.extend({
+    client_id: z.string().min(1).optional(),
+    site: z.string().min(1).max(253).optional(),
+    url: z.string().max(2000).optional(),
+    urls: z.array(z.string().max(2000)).max(200).optional(),
+    occurred_at: date.optional(),
+    type: z.enum(types).optional(),
+}).strict();
+const typeByField: Partial<Record<(typeof fields)[number], (typeof types)[number]>> = { title: 'title_meta', meta_description: 'title_meta', schema: 'schema', redirect: 'redirect', internal_links: 'internal_links', canonical: 'technical', robots: 'technical' };
+function inferType(diff: z.infer<typeof fieldChange>[]): (typeof types)[number] {
+    const kinds = new Set(diff.map(d => typeByField[d.field] ?? 'content'));
+    return kinds.size === 1 ? [...kinds][0] : 'content';
+}
+const today = (timeZone: string) => new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+/** Turns agent input into a stored change, creating the site and pages from URLs as needed. */
+async function resolveChange(env: Env, actor: Actor, input: z.infer<typeof changeInputSchema>) {
+    const { site, url, urls, ...rest } = input;
+    const pageUrls = [...(url ? [url] : []), ...(urls ?? [])].map(normalizeURL);
+    const domains = new Set(pageUrls.map(siteDomain));
+    if (site)
+        domains.add(siteDomain(site));
+    if (domains.size > 1)
+        throw new HttpError(400, 'All URLs in one change must belong to the same site');
+    let clientId = input.client_id;
+    if (domains.size === 1) {
+        const found = await ensureSite(env, actor, [...domains][0], input.timezone);
+        if (clientId && clientId !== found.id)
+            throw new HttpError(400, 'client_id does not match the site of the URLs');
+        clientId = found.id;
+    }
+    if (!clientId)
+        throw new HttpError(400, 'Provide url, urls or site (or client_id)');
+    await client(env, actor, clientId);
+    const pageIds = [...rest.page_ids, ...await Promise.all(pageUrls.map(u => ensurePage(env, clientId, u)))];
+    return changeSchema.parse({ ...rest, client_id: clientId, page_ids: [...new Set(pageIds)], occurred_at: input.occurred_at ?? today(input.timezone), type: input.type ?? inferType(input.diff) });
+}
 export async function logChange(env: Env, actor: Actor, raw: unknown, key?: string, source = 'api') {
     scope(actor, 'write:changes');
-    const c = changeSchema.parse(raw);
-    await client(env, actor, c.client_id);
-    await validateScope(env, c);
-    const requestHash = await hash(JSON.stringify(c));
+    const input = changeInputSchema.parse(raw);
+    if (key && key.length > 200)
+        throw new HttpError(400, 'Idempotency key too long');
+    // Hash what was sent, before defaults like "today" are applied, so retries stay identical.
+    const requestHash = await hash(JSON.stringify(input));
     if (key) {
-        if (key.length > 200)
-            throw new HttpError(400, 'Idempotency key too long');
         const old = await env.DB.prepare('SELECT * FROM idempotency WHERE actor_id=? AND key=?').bind(actor.id, key).first<any>();
         if (old) {
             if (old.request_hash !== requestHash)
@@ -119,8 +207,10 @@ export async function logChange(env: Env, actor: Actor, raw: unknown, key?: stri
             return getChange(env, actor, old.change_id);
         }
     }
+    const c = await resolveChange(env, actor, input);
+    await validateScope(env, c);
     const id = crypto.randomUUID(), now = new Date().toISOString();
-    const insert = env.DB.prepare('INSERT INTO change_entry (id,client_id,occurred_at,timezone,status,type,page_ids,group_id,sitewide,summary,rationale,author_id,author_name,author_kind,model,source,evidence,expected_metric,tags,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(id, c.client_id, c.occurred_at, c.timezone, c.status, c.type, JSON.stringify([...new Set(c.page_ids)]), c.group_id, Number(c.sitewide), c.summary, c.rationale, actor.id, actor.name, actor.kind, actor.model ?? null, source, JSON.stringify(c.evidence), c.expected_metric, JSON.stringify(c.tags), now, now);
+    const insert = env.DB.prepare('INSERT INTO change_entry (id,client_id,occurred_at,timezone,status,type,page_ids,group_id,sitewide,summary,rationale,author_id,author_name,author_kind,model,source,evidence,expected_metric,tags,created_at,updated_at,diff) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(id, c.client_id, c.occurred_at, c.timezone, c.status, c.type, JSON.stringify(c.page_ids), c.group_id, Number(c.sitewide), c.summary, c.rationale, actor.id, actor.name, actor.kind, actor.model ?? null, source, JSON.stringify(c.evidence), c.expected_metric, JSON.stringify(c.tags), now, now, JSON.stringify(c.diff));
     try {
         await env.DB.batch(key ? [insert, env.DB.prepare('INSERT INTO idempotency VALUES (?,?,?,?)').bind(actor.id, key, requestHash, id)] : [insert]);
     }
@@ -141,7 +231,7 @@ export async function updateChange(env: Env, actor: Actor, id: string, raw: unkn
     const patch = Object.fromEntries(Object.entries(parsed).filter(([key]) => Object.hasOwn(raw as object, key)));
     const merged = changeSchema.parse({ ...Object.fromEntries(Object.keys(changeSchema.shape).map(k => [k, (old as any)[k]])), sitewide: !!old.sitewide, ...patch });
     await validateScope(env, merged);
-    await env.DB.prepare('UPDATE change_entry SET occurred_at=?,timezone=?,status=?,type=?,page_ids=?,group_id=?,sitewide=?,summary=?,rationale=?,evidence=?,expected_metric=?,tags=?,updated_at=? WHERE id=?').bind(merged.occurred_at, merged.timezone, merged.status, merged.type, JSON.stringify(merged.page_ids), merged.group_id, Number(merged.sitewide), merged.summary, merged.rationale, JSON.stringify(merged.evidence), merged.expected_metric, JSON.stringify(merged.tags), new Date().toISOString(), id).run();
+    await env.DB.prepare('UPDATE change_entry SET occurred_at=?,timezone=?,status=?,type=?,page_ids=?,group_id=?,sitewide=?,summary=?,rationale=?,evidence=?,expected_metric=?,tags=?,diff=?,updated_at=? WHERE id=?').bind(merged.occurred_at, merged.timezone, merged.status, merged.type, JSON.stringify(merged.page_ids), merged.group_id, Number(merged.sitewide), merged.summary, merged.rationale, JSON.stringify(merged.evidence), merged.expected_metric, JSON.stringify(merged.tags), JSON.stringify(merged.diff), new Date().toISOString(), id).run();
     return getChange(env, actor, id);
 }
 interface MetricRow {
