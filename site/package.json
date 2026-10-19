@@ -1,0 +1,15 @@
+{
+  "name": "seo-notebook-site",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro build && wrangler dev",
+    "deploy": "astro build && wrangler deploy"
+  },
+  "devDependencies": {
+    "astro": "7.3.8",
+    "wrangler": "4.151.0"
+  }
+}
