@@ -7,7 +7,7 @@
         "directory": "./dist",
         "binding": "ASSETS",
         "not_found_handling": "404-page",
-        // The Worker only redirects the bare domain; it hands every other request to the assets.
+        // The Worker only redirects www; it hands every other request to the assets.
         "run_worker_first": true
     },
     // Cloudflare creates the DNS records and certificates for the zone on deploy.
