@@ -1,0 +1,9 @@
+{
+    // Marketing site only. The notebook itself is the Worker at the repository root.
+    "name": "seo-notebook-site",
+    "compatibility_date": "2026-10-14",
+    "assets": {
+        "directory": "./dist",
+        "not_found_handling": "404-page"
+    }
+}

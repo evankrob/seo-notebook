@@ -1,0 +1,84 @@
+---
+interface Props {
+    title: string;
+    description: string;
+}
+const { title, description } = Astro.props;
+---
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+    <slot />
+</body>
+</html>
+
+<style is:global>
+    :root {
+        --bg: #f4f6f3;
+        --surface: #ffffff;
+        --surface-2: #f7f9f6;
+        --border: #e3e8e1;
+        --border-strong: #d3dbd0;
+        --text: #1d2a24;
+        --text-2: #4f5f56;
+        --muted: #7d8a82;
+        --brand: #285b43;
+        --brand-2: #3c805d;
+        --brand-soft: #e8f1e9;
+        --brand-ink: #24553d;
+        --amber: #b38c42;
+        --red-ink: #975b4a;
+        --heat-0: #e9ede7;
+        --heat-1: #c4dfc9;
+        --heat-2: #8cc39b;
+        --heat-4: #285b43;
+        --shadow: 0 1px 2px rgb(20 40 30 / 4%), 0 2px 8px rgb(20 40 30 / 4%);
+        --shadow-lg: 0 2px 6px rgb(20 40 30 / 5%), 0 24px 60px -20px rgb(20 40 30 / 22%);
+        color-scheme: light;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Inter, Roboto, sans-serif;
+        color: var(--text);
+        background: var(--bg);
+        -webkit-font-smoothing: antialiased;
+    }
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --bg: #111714;
+            --surface: #18201c;
+            --surface-2: #1e2823;
+            --border: #27322c;
+            --border-strong: #34413a;
+            --text: #e6ece8;
+            --text-2: #b4c1b9;
+            --muted: #84928a;
+            --brand: #3f8a5d;
+            --brand-2: #6fb889;
+            --brand-soft: #1e3227;
+            --brand-ink: #9fd4b0;
+            --amber: #d0a85a;
+            --red-ink: #e6a493;
+            --heat-0: #222c27;
+            --heat-1: #24442f;
+            --heat-2: #2f6a43;
+            --heat-4: #7cc996;
+            --shadow: none;
+            --shadow-lg: 0 24px 60px -20px rgb(0 0 0 / 60%);
+            color-scheme: dark;
+        }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); }
+    a { color: inherit; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 0 20px; }
+</style>
