@@ -275,6 +275,16 @@ export async function updateChange(env: Env, actor: Actor, id: string, raw: unkn
     await env.DB.prepare('UPDATE change_entry SET occurred_at=?,timezone=?,status=?,type=?,page_ids=?,group_id=?,sitewide=?,summary=?,rationale=?,evidence=?,expected_metric=?,tags=?,diff=?,updated_at=? WHERE id=?').bind(merged.occurred_at, merged.timezone, merged.status, merged.type, JSON.stringify(merged.page_ids), merged.group_id, Number(merged.sitewide), merged.summary, merged.rationale, JSON.stringify(merged.evidence), merged.expected_metric, JSON.stringify(merged.tags), JSON.stringify(merged.diff), new Date().toISOString(), id).run();
     return getChange(env, actor, id);
 }
+export async function deleteChange(env: Env, actor: Actor, id: string) {
+    scope(actor, 'write:changes');
+    await getChange(env, actor, id);
+    // idempotency.change_id references change_entry(id), so it goes first; pages and groups are shared and stay.
+    await env.DB.batch([
+        env.DB.prepare('DELETE FROM idempotency WHERE change_id=?').bind(id),
+        env.DB.prepare('DELETE FROM change_entry WHERE id=?').bind(id),
+    ]);
+    return { ok: true, id };
+}
 interface MetricRow {
     page_id: string;
     date: string;

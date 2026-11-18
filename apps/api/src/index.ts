@@ -6,7 +6,7 @@ import { clients } from './schema';
 import type { Actor, Bindings, Env, Job } from './types';
 import { accessConfigured, authenticate, hash, isLoopback } from './auth';
 import { SETUP_CSP, setupPage } from './setup';
-import { HttpError, client, date, day, getImpact, impactCache, listSites, siteDomain, listChanges, logChange, normalizeURL, pageURL, scope, updateChange } from './service';
+import { HttpError, client, date, day, getImpact, impactCache, listSites, siteDomain, listChanges, logChange, normalizeURL, pageURL, scope, updateChange, deleteChange } from './service';
 import { backfillPage, fanout, processJob } from './jobs';
 import { discover, parseServiceAccount } from '../../../packages/connectors/google';
 import { mcp } from './mcp';
@@ -155,6 +155,7 @@ app.post('/v1/properties/:id/sync', async (c) => {
 app.get('/v1/changes', async (c) => c.json(await listChanges(c.env, c.get('actor'), c.req.query())));
 app.post('/v1/changes', async (c) => c.json(await logChange(c.env, c.get('actor'), await body(c), c.req.header('Idempotency-Key'), c.get('actor').kind === 'human' ? 'ui' : 'api'), 201));
 app.patch('/v1/changes/:id', async (c) => c.json(await updateChange(c.env, c.get('actor'), c.req.param('id'), await body(c))));
+app.delete('/v1/changes/:id', async (c) => c.json(await deleteChange(c.env, c.get('actor'), c.req.param('id'))));
 app.get('/v1/impact/:id', async (c) => c.json(await getImpact(c.env, c.get('actor'), c.req.param('id'), c.req.query())));
 app.get('/v1/timeline', async (c) => { const a = c.get('actor'); scope(a, 'read:metrics'); const id = c.req.query('client') ?? ''; await client(c.env, a, id); let sql = 'SELECT m.* FROM metric_series m JOIN property p ON p.id=m.property_id WHERE p.client_id=?'; const args: string[] = [id]; for (const [key, col] of [['property', 'm.property_id'], ['page', 'm.page_id'], ['metric', 'm.metric']] as const) {
     const v = c.req.query(key);

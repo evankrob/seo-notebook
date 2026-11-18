@@ -19,6 +19,10 @@ Leave out `occurred_at`, `type` and `status` unless you know better: they defaul
 
 If the change is not live yet (a PR awaiting review, a scheduled deploy), log it with `status: "planned"`. When it ships, call `update_change` with `status: "shipped"` (and `occurred_at` if it went live on a different day). If it is rolled back, set `status: "reverted"`. Never mark something shipped that did not ship.
 
+## Deleting a change
+
+If you logged something by mistake, call `delete_change` with its `change_id`. Deletion is permanent. If a change really shipped and was later rolled back, keep the record and use `update_change` with `status: "reverted"` instead.
+
 ## Before you edit
 
 Call `list_changes` with the page `url` (or `site`) to see recent work on the same page. Changes close together overlap, and overlapping changes make impact readouts inconclusive, so mention recent changes to the user before stacking another one on the same page.

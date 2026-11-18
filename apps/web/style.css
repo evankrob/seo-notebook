@@ -88,6 +88,8 @@ button:hover, .button:hover { filter: brightness(0.95); }
 button.secondary, .button.secondary { background: var(--surface); color: var(--text-2); border-color: var(--border-strong); }
 button.ghost { background: transparent; border-color: transparent; color: var(--text-2); padding: 6px 10px; }
 button.ghost:hover { background: var(--surface-2); filter: none; }
+button.danger { color: var(--red-ink); border-color: var(--red-ink); }
+button.danger:hover { background: var(--red-soft); filter: none; }
 button.small, .button.small { padding: 6px 12px; font-size: 12px; }
 button:disabled { opacity: 0.5; cursor: wait; }
 input, select, textarea {

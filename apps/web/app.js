@@ -615,6 +615,7 @@ function changeForm(existing) {
         ${input('after', 'New value', 'text', '', false)}`}
         ${input('tags', 'Tags (comma separated)', 'text', (c.tags ?? []).join(', '), false)}
         ${input('evidence', 'Evidence link (optional)', 'url', c.evidence?.[0] ?? '', false)}
+        ${existing ? '<div class="wide"><button type="button" class="secondary danger" data-delete>Delete</button></div>' : ''}
     </div>`, async (b) => {
         const data = {
             client_id: site,
@@ -642,6 +643,21 @@ function changeForm(existing) {
             await api('/v1/changes', 'POST', data);
         }
         await refresh();
+    });
+    box.querySelector('[data-delete]')?.addEventListener('click', async () => {
+        if (!confirm("Delete this change? This can't be undone."))
+            return;
+        try {
+            await api('/v1/changes/' + encodeURIComponent(c.id), 'DELETE');
+            delete state.impacts[c.id + '|'];
+            if (state.expanded === c.id)
+                state.expanded = null;
+            box.closest('.modal').remove();
+            await refresh();
+        }
+        catch (err) {
+            toast(err.message);
+        }
     });
     box.querySelector('[name=site]')?.addEventListener('change', e => {
         site = e.target.value;

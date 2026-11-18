@@ -50,7 +50,7 @@ describe('Worker API + SQL integration', () => {
     it('shares a read-only period report and CSV without granting workspace access', async () => { const publicReport = await app.request('/public/reports/demo-read-only-report', {}, env); expect(publicReport.status).toBe(200); expect((await publicReport.json() as any).changes.length).toBe(5); const csv = await app.request('/public/reports/demo-read-only-report/export.csv', {}, env); expect(csv.headers.get('Content-Type')).toContain('text/csv'); expect(await csv.text()).toContain('Clarified the garden tools title'); expect((await app.request('/public/reports/demo-read-only-report', { method: 'POST' }, env)).status).toBe(404); expect((await app.request('/v1/changes', { headers: { Authorization: 'Bearer demo-read-only-report' } }, env)).status).toBe(401); });
     it('treats loopback requests as the local owner, protects mutations by origin, issues scoped tokens', async () => { const path = '/v1/agents', body = { name: 'Read only', scopes: ['read:metrics'] }; const noOrigin = await request(path, 'POST', body, { Authorization: '' }); expect(noOrigin.status).toBe(403); const good = await request(path, 'POST', body, { Authorization: '', Origin: 'http://localhost:8787' }); expect(good.status).toBe(201); const token = (await good.json() as { token: string }).token; expect((await request('/v1/changes', 'POST', change, { Authorization: 'Bearer ' + token })).status).toBe(403); const me = await (await request('/v1/me', 'GET', undefined, { Authorization: '' })).json() as { auth: string; role: string; email: string }; expect(me).toMatchObject({ auth: 'local', role: 'admin', email: 'owner@localhost' }); });
     it('prevents cross-organization reads even with valid tokens', async () => { sqlite.exec("INSERT INTO org VALUES ('other','Other','self-host'); INSERT INTO client(id,org_id,name,timezone,domain) VALUES ('other-client','other','Other client','UTC','other.example'); UPDATE agent_token SET org_id='other' WHERE id='demo-agent';"); expect((await (await request('/v1/changes')).json() as any[])).toHaveLength(0); expect((await request('/v1/impact/title-refresh')).status).toBe(404); });
-    it('supports MCP initialize, tools/list and tools/call over Streamable HTTP', async () => { const headers = { Accept: 'application/json, text/event-stream' }; const init = await request('/mcp', 'POST', { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } } }, headers); expect(init.status).toBe(200); expect((await init.json() as any).result.serverInfo.name).toBe('seo-notebook'); const tools = await request('/mcp', 'POST', { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }, headers); expect((await tools.json() as any).result.tools.map((t: any) => t.name)).toEqual(['log_change', 'update_change', 'list_sites', 'list_changes', 'get_impact']); const call = await request('/mcp', 'POST', { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'get_impact', arguments: { change_id: 'title-refresh' } } }, headers); const result = await call.json() as any; expect(JSON.parse(result.result.content[0].text).scored).toBe(true); });
+    it('supports MCP initialize, tools/list and tools/call over Streamable HTTP', async () => { const headers = { Accept: 'application/json, text/event-stream' }; const init = await request('/mcp', 'POST', { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } } }, headers); expect(init.status).toBe(200); expect((await init.json() as any).result.serverInfo.name).toBe('seo-notebook'); const tools = await request('/mcp', 'POST', { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }, headers); expect((await tools.json() as any).result.tools.map((t: any) => t.name)).toEqual(['log_change', 'update_change', 'delete_change', 'list_sites', 'list_changes', 'get_impact']); const call = await request('/mcp', 'POST', { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'get_impact', arguments: { change_id: 'title-refresh' } } }, headers); const result = await call.json() as any; expect(JSON.parse(result.result.content[0].text).scored).toBe(true); });
 });
 describe('workspace administration boundaries', () => {
     const human = async () => ({ Authorization: '', Origin: 'http://localhost:8787' });
@@ -485,5 +485,64 @@ describe('redirect resolution for new pages', () => {
         expect(r.client_id).not.toBe('other-agency');
         expect(r.page_ids).not.toContain('other-home');
         expect(pageUrl(r.page_ids[0])).toBe('https://www.agency.example/');
+    });
+});
+
+describe('delete change', () => {
+    const count = (sql: string, ...args: string[]) => (sqlite.prepare(sql).get(...args) as { n: number }).n;
+    const rows = (id: string) => count('SELECT COUNT(*) n FROM change_entry WHERE id=?', id);
+    const mcpCall = async (name: string, args: Record<string, unknown>, headers: Record<string, string> = {}) => {
+        const r = await request('/mcp', 'POST', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }, { Accept: 'application/json, text/event-stream', ...headers });
+        return (await r.json() as { result: { isError?: boolean; content: { text: string }[] } }).result;
+    };
+
+    it('deletes a change with its idempotency rows, keeps pages, then 404s', async () => {
+        const created = await (await request('/v1/changes', 'POST', change, { 'Idempotency-Key': 'del-1' })).json() as { id: string };
+        expect(count('SELECT COUNT(*) n FROM idempotency WHERE change_id=?', created.id)).toBe(1);
+        const pages = count('SELECT COUNT(*) n FROM page');
+        const r = await request('/v1/changes/' + created.id, 'DELETE');
+        expect(r.status).toBe(200);
+        expect(await r.json()).toEqual({ ok: true, id: created.id });
+        expect(rows(created.id)).toBe(0);
+        expect(count('SELECT COUNT(*) n FROM idempotency WHERE change_id=?', created.id)).toBe(0);
+        expect(count('SELECT COUNT(*) n FROM page')).toBe(pages);
+        expect(((await (await request('/v1/changes')).json()) as { id: string }[]).map(c => c.id)).not.toContain(created.id);
+        expect((await request('/v1/changes/' + created.id, 'PATCH', { summary: 'x' })).status).toBe(404);
+        expect((await request('/v1/changes/' + created.id, 'DELETE')).status).toBe(404);
+        expect((await request('/v1/changes/nope', 'DELETE')).status).toBe(404);
+    });
+
+    it('deletes seeded changes without an idempotency key', async () => {
+        expect((await request('/v1/changes/title-refresh', 'DELETE')).status).toBe(200);
+        expect(rows('title-refresh')).toBe(0);
+    });
+
+    it('404s for another organization and leaves the row intact', async () => {
+        sqlite.exec("INSERT INTO org VALUES ('other','Other','self-host'); INSERT INTO agent_token(id,org_id,name,model,token_hash,scopes) VALUES ('agent2','other','Other agent',NULL,'" + createHash('sha256').update('other-token').digest('hex') + "','[\"write:changes\",\"read:metrics\"]');");
+        const other = { Authorization: 'Bearer other-token' };
+        const created = await (await request('/v1/changes', 'POST', change, { 'Idempotency-Key': 'keep-1' })).json() as { id: string };
+        expect((await request('/v1/changes/' + created.id, 'DELETE', undefined, other)).status).toBe(404);
+        expect((await mcpCall('delete_change', { change_id: created.id }, other)).isError).toBe(true);
+        expect(rows(created.id)).toBe(1);
+        expect(count('SELECT COUNT(*) n FROM idempotency WHERE change_id=?', created.id)).toBe(1);
+    });
+
+    it('rejects agents without write scope like PATCH', async () => {
+        sqlite.exec("UPDATE agent_token SET scopes='[\"read:metrics\"]' WHERE id='demo-agent'");
+        const patch = await request('/v1/changes/title-refresh', 'PATCH', { summary: 'x' });
+        const del = await request('/v1/changes/title-refresh', 'DELETE');
+        expect(del.status).toBe(patch.status);
+        expect(del.status).toBeGreaterThanOrEqual(400);
+        expect(del.status).not.toBe(404);
+        expect((await mcpCall('delete_change', { change_id: 'title-refresh' })).isError).toBe(true);
+        expect(rows('title-refresh')).toBe(1);
+    });
+
+    it('MCP delete_change removes the change', async () => {
+        const created = JSON.parse((await mcpCall('log_change', { url: 'https://brightwax.example/x', summary: 'S', rationale: 'R', idempotency_key: 'mcp-del' })).content[0].text) as { id: string };
+        const res = await mcpCall('delete_change', { change_id: created.id });
+        expect(JSON.parse(res.content[0].text)).toEqual({ ok: true, id: created.id });
+        expect(rows(created.id)).toBe(0);
+        expect((await mcpCall('delete_change', { change_id: created.id })).isError).toBe(true);
     });
 });

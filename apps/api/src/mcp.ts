@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { z } from 'zod';
-import { changeInputSchema, changeSchema, getImpact, listChanges, listSites, logChange, updateChange } from './service';
+import { changeInputSchema, changeSchema, getImpact, listChanges, listSites, logChange, updateChange, deleteChange } from './service';
 import type { Actor, Env } from './types';
 
 const LOG_CHANGE = `Record an SEO or content change you made to a website, right after you make it.
@@ -24,6 +24,10 @@ export async function mcp(request: Request, env: Env, actor: Actor) {
         // No defaults here: the SDK applies them, and a default would overwrite the stored value.
         inputSchema: { change_id: z.string(), status: c.status.unwrap().optional(), occurred_at: c.occurred_at.optional(), summary: c.summary.optional(), rationale: c.rationale.optional(), type: c.type.optional(), diff: c.diff.unwrap().optional(), evidence: c.evidence.unwrap().optional(), tags: c.tags.unwrap().optional(), expected_metric: c.expected_metric.unwrap().optional() },
     }, async ({ change_id, ...patch }) => wrap(() => updateChange(env, actor, change_id, patch)));
+    server.registerTool('delete_change', {
+        description: 'Permanently delete a change entry, for example one logged by mistake. This cannot be undone; to record that a change was undone, use update_change with status "reverted" instead.',
+        inputSchema: { change_id: z.string() },
+    }, async ({ change_id }) => wrap(() => deleteChange(env, actor, change_id)));
     server.registerTool('list_sites', { description: 'List the sites in this notebook with page and change counts and the date of the latest change.', inputSchema: {} }, async () => wrap(() => listSites(env, actor)));
     server.registerTool('list_changes', {
         description: 'List recorded changes, newest first. Check this before editing a page to see recent or competing work. Filter by site domain, page URL, or date range (YYYY-MM-DD).',

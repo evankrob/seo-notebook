@@ -130,6 +130,7 @@ Served at **`/mcp`** (Streamable HTTP, stateless, JSON responses), bearer token 
 |---|---|
 | `log_change` | Record a change by URL with old → new values. Retry with the same `idempotency_key`. |
 | `update_change` | Mark a planned change `shipped`, mark one `reverted`, or correct details. |
+| `delete_change` | Permanently delete a change logged by mistake (`change_id`). Needs the same `write:changes` scope as `update_change`. |
 | `list_sites` | Sites with page and change counts and the latest change date. |
 | `list_changes` | Changes, newest first; filter by `site`, `url`, `since`, `until`. |
 | `get_impact` | Before/after readout with confidence, overlaps and caveats. |
@@ -148,6 +149,7 @@ The browser UI uses these with the Access session. Agent bearer tokens also work
 | POST | `/v1/properties/:id/sync?backfill=true` | Queue fixture backfill; omit the flag for a seven-day refresh |
 | GET / POST | `/v1/changes` | List (`?site=&client=&url=&since=&until=`) / create (same body as `log_change`; `Idempotency-Key` header) |
 | PATCH | `/v1/changes/:id` | Edit, ship or revert |
+| DELETE | `/v1/changes/:id` | Permanently delete a change (and its idempotency records); returns `{ "ok": true, "id": ... }`, 404 if unknown. Pages and groups are kept. Same scope as PATCH |
 | GET | `/v1/impact/:id?control=&property=&metric=&days=28&lag=3` | Before/after readout |
 | GET | `/v1/timeline?client=&property=&page=&metric=&since=` | Daily series and change markers |
 | POST | `/v1/metrics/import?client=`, `/v1/changes/import?client=` | Raw CSV (or JSON for metrics) → R2 + Queue |
